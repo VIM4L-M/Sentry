@@ -1,0 +1,82 @@
+# Default disaster city — 30x20 tiles.
+#
+# `grid` is an ASCII map: `height` rows of `width` characters, one
+# character per tile, resolved through the legend below (which extends/
+# overrides sentry_ai.domain.map.DEFAULT_TERRAIN_LEGEND).
+#
+#   .  open ground        x  collapsed building
+#   #  building           r  rubble
+#   =  road                t  tree
+#   !  blocked road
+#
+# Two horizontal arterial roads (y=4, y=14) and three vertical arterials
+# (x=3, x=15, x=26) divide the city into blocks. One vertical arterial is
+# severed by a blocked road (x=15, y=10). Six building blocks, a
+# collapsed-building/rubble cluster (a building that came down across the
+# road from block C), and scattered trees fill in the rest.
+
+width: 30
+height: 20
+
+terrain_legend:
+  ".": open_ground
+  "#": building
+  "=": road
+  "x": collapsed_building
+  "r": rubble
+  "t": tree
+  "!": blocked_road
+
+grid:
+  - "...=.####......=..####....=..."
+  - "...=.####......=..####....=..."
+  - "...=.####....t.=..####....=..."
+  - "...=.........t.=..####....=..."
+  - "=============================="
+  - "...=...........=..........=..."
+  - "...=.#####.....=..######..=..."
+  - "...=.#####.....=..######..=..."
+  - "...=.#####xr...=..######..=..."
+  - "...=......xr...=..........=..."
+  - ".t.=...........!....rr....=..."
+  - ".t.=...........=..........=..."
+  - "...=...tt......=........t.=..."
+  - "...=...........=........t.=..."
+  - "=============================="
+  - "...=...........=..........=..."
+  - "...=.####......=..#####...=..."
+  - "..t=.####......=..#####...=..."
+  - "..t=.####......=..#####...=..."
+  - "...=.####......=..........=..."
+
+# Safe zone: carries extra metadata (radius, capacity) so it's specified
+# explicitly rather than as a grid glyph. Overrides whatever grid tile is here.
+safe_zone:
+  position: [1, 1]
+  radius: 2
+  capacity: 4
+
+# Vehicle spawns near the safe zone (its home base) on open ground.
+vehicle_start: [1, 3]
+
+# Trapped victims — deliberately placed in/near rubble, collapsed
+# buildings, and damaged structures, plus one easier open-ground rescue.
+victims:
+  - id: "victim_01"
+    position: [10, 8]   # trapped under the collapsed building
+  - id: "victim_02"
+    position: [20, 10]  # trapped under rubble
+  - id: "victim_03"
+    position: [7, 17]   # trapped inside a damaged building, near a fire
+  - id: "victim_04"
+    position: [25, 5]   # stranded in the open, easy to reach
+
+fires:
+  - id: "fire_01"
+    position: [19, 7]
+    intensity: 0.7
+    radius: 2
+  - id: "fire_02"
+    position: [6, 17]
+    intensity: 0.5
+    radius: 1

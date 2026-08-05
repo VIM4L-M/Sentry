@@ -1,0 +1,15 @@
+# Heavy ML dependencies — not needed until Phase 3 onward.
+# Install once you start Phase 3 (Computer Vision):
+#   pip install -r requirements-ml.txt
+#
+# Left out of requirements.txt on purpose: Phase 1/2 have zero AI code, and these
+# packages pull multi-GB CUDA wheels. Verified resolvable on CPython 3.14 + this
+# machine's RTX 3050 (4GB) laptop GPU as of project bootstrap (2026-07-24).
+
+torch>=2.8            # Unit I (MLP), Unit III (LSTM), Unit IV (autoencoder)
+torchvision>=0.23
+ultralytics>=8.3       # Unit II — YOLOv8n, transfer learning
+opencv-python>=4.10
+gymnasium>=1.0          # Unit V — RL environment API
+stable-baselines3>=2.4   # Unit V — DQN
+streamlit>=1.40           # Phase 9 dashboard

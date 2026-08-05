@@ -1,0 +1,12 @@
+# Root application configuration — composes every other config file.
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_app_config().
+# Paths below are relative to the project root.
+
+logging_config: "configs/logging.yaml"
+map_config: "configs/maps/city_default.yaml"
+
+render:
+  window_title: "SENTRY AI — Disaster City Preview"
+  tile_size_px: 28
+  target_fps: 60
+  palette_config: "configs/render.yaml"

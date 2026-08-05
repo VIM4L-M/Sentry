@@ -1,0 +1,26 @@
+# Standard-library logging.config.dictConfig schema.
+# Loaded by sentry_ai.common.logging_config.setup_logging().
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  standard:
+    format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: INFO
+    formatter: standard
+    stream: ext://sys.stdout
+
+root:
+  level: WARNING
+  handlers: [console]
+
+loggers:
+  sentry_ai:
+    level: INFO
+    handlers: [console]
+    propagate: false

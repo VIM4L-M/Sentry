@@ -1,0 +1,16 @@
+# Core dependencies — required from Phase 1 onward.
+# Install: pip install -r requirements.txt
+#
+# NOTE: vanilla `pygame` has no prebuilt wheel for CPython 3.14 and fails to build
+# from source without system SDL dev headers. We use `pygame-ce`, the actively
+# maintained, drop-in-compatible community fork (still `import pygame`). See
+# PROJECT.md "Environment Notes" for details.
+pyyaml>=6.0
+pygame-ce>=2.5
+numpy>=1.26
+
+# --- Dev / test tooling ---
+pytest>=8.0
+pytest-cov>=5.0
+mypy>=1.10
+ruff>=0.6

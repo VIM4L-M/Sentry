@@ -1,0 +1,21 @@
+# Color palette for the Pygame renderer. Loaded by sentry_ai.rendering.theme.Theme.
+# Every TerrainType and EntityKind member must have an entry — Theme.from_config
+# validates this and fails fast if one is missing (see domain/enums.py).
+background: [24, 24, 28]
+
+terrain:
+  open_ground: [82, 78, 68]
+  road: [58, 58, 60]
+  building: [120, 104, 92]
+  collapsed_building: [95, 66, 56]
+  rubble: [112, 92, 60]
+  tree: [42, 110, 55]
+  safe_zone: [40, 160, 96]
+  blocked_road: [150, 62, 42]
+
+entities:
+  vehicle: [46, 134, 222]
+  victim: [235, 203, 42]
+  fire: [224, 62, 32]
+  smoke: [150, 150, 150]
+  obstacle: [184, 92, 42]
