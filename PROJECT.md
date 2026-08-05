@@ -725,14 +725,45 @@ Not built, and deliberately so: weather, which the specification lists as option
 
 ### Phase 3 — Computer Vision (Unit II)
 
-The dataset this phase needs already exists — `scripts/capture_dataset.py` emits
-images plus YOLO label files, with class ids fixed by `sensors.frame.YOLO_CLASSES`
-(`victim`, `fire`, `obstacle`).
+The dataset already exists: `scripts/capture_dataset.py` emits degraded frames, their
+clean counterparts, and YOLO label files, with class ids fixed by
+`sensors.frame.YOLO_CLASSES`.
 
-- YOLOv8n fine-tuning pipeline (`train_yolo.py`, `configs/training/yolo.yaml`)
-- `YoloDetector` adapter implementing `IVisionDetector`, wired into the pipeline
-- Detection → world projection via `CameraFrame.world_position_of`, merged across the
-  overlapping CCTV footprints into the occupancy grid
+**Detector classes are `victim`, `fire`, `obstacle` — and nothing else.** Roads and
+buildings are painted into every frame but never annotated. The simulator generated
+the static layout, so training a detector to rediscover it would add parameters and
+label noise while teaching the system nothing it does not already know. The occupancy
+grid keeps taking terrain from the map and only the *dynamic* codes (`FIRE`, `DEBRIS`,
+`VICTIM`) from detections. If a later phase ever needs to run on real camera input
+with no map, that is a new decision recorded in a new ADR, not a quiet reversal here.
+
+Phase 3 is deliberately built in five steps, each independently testable, because the
+value of the split is that **the detector never learns anything about maps**:
+
+**3.1 — Detect.** `train_yolo.py` + `configs/training/yolo.yaml` fine-tune YOLOv8n.
+`YoloDetector` implements `IVisionDetector`: image in, `Detection[]` out. It does not
+know what a `Position` is. Success is mAP on a held-out split of the captured dataset.
+
+**3.2 — Merge.** A `DetectionMerger` takes the four CCTV frames' detections, projects
+each through `CameraFrame.world_position_of`, and answers the question the overlapping
+footprints force: *are these two boxes the same victim seen twice, or two victims?*
+Testable on its own with hand-built detections and no model in the loop.
+
+**3.3 — Build the map.** An `OccupancyGridBuilder` turns merged world-space detections
+into an `OccupancyGrid`, replacing `OccupancyGrid.from_city_map` as the producer.
+Scored against that ground-truth grid, which stays in the codebase precisely so the
+detector-driven grid has something to be measured against.
+
+**3.4 and 3.5 — already built, and that is the point.** `AStarPlanner`,
+`MissionController`, and `VehicleController` are unchanged Phase 2 code. Swapping the
+grid's producer must not touch a line of them; if it does, the seam ADR 0002 describes
+has been broken. The Phase 3 deliverable here is an integration test proving a full
+mission runs on a detector-derived grid, not new navigation code.
+
+Note on ordering: the degrader already sits between the camera and the dataset, so
+Phase 4's autoencoder slots in as `SensorRig → FrameDegrader → IDenoiser →
+IVisionDetector` without moving anything. Until Phase 4 exists, 3.1 trains directly on
+degraded frames, which is the honest baseline the denoiser has to beat.
 
 ### Phase 4 — Representation Learning (Unit IV)
 
@@ -794,8 +825,12 @@ and its pixel-aligned clean original.
       complete mission runs unattended. *(Phase 2)*
 - [x] **M2b — Changing City**: fire spreads, obstacles appear mid-mission, and the
       command center replans around them; `SensorRig` emits camera frames. *(Phase 2)*
-- [ ] **M3 — Sees**: YOLOv8n detects victims/fire/obstacles in simulated camera frames
-      above target mAP. *(Phase 3)*
+- [ ] **M3a — Sees**: YOLOv8n detects victims/fire/obstacles in simulated camera frames
+      above target mAP. *(Phase 3.1)*
+- [ ] **M3b — Sees Once**: detections from the four overlapping CCTV views merge into
+      one world-space belief; a victim in two frames is one victim. *(Phase 3.2-3.3)*
+- [ ] **M3c — Drives On What It Sees**: a full mission completes on a detector-derived
+      occupancy grid, with `navigation/` and `simulation/` unmodified. *(Phase 3.4-3.5)*
 - [ ] **M4 — Sees Clearly**: denoising autoencoder measurably improves detection mAP
       under injected noise. *(Phase 4)*
 - [ ] **M5 — Anticipates**: LSTM behaviour predictions beat a naive baseline on held-out
