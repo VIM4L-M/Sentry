@@ -20,6 +20,7 @@ from sentry_ai.domain.occupancy import OccupancyGrid
 from sentry_ai.interfaces.navigation import LocalAction, LocalDecision, LocalObservation
 from sentry_ai.navigation.astar import AStarPlanner
 from sentry_ai.rendering.simulation_app import (
+    MissionScene,
     ModeSwitchController,
     SimulationApp,
     build_mode_switch,
@@ -98,6 +99,113 @@ def _press(key: int) -> None:
     """Queue one key press followed by a quit, so ``run`` returns."""
     pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=key))
     pygame.event.post(pygame.event.Event(pygame.QUIT))
+
+
+def _scene(project_root: Path) -> MissionScene:
+    """A freshly composed mission, as the CLI script builds one."""
+    loader = ConfigLoader(project_root=project_root)
+    app_config = loader.load_app_config("configs/app.yaml")
+    assert app_config.simulation_config_path is not None
+    assert app_config.vehicle_config_path is not None
+
+    simulation_config = loader.load_simulation_config(app_config.simulation_config_path)
+    vehicle_config = loader.load_vehicle_config(app_config.vehicle_config_path)
+    city_map = CityMap.from_config(loader.load_yaml(app_config.map_config_path))
+    mission = MissionController(
+        city_map=city_map,
+        grid=OccupancyGrid.from_city_map(city_map),
+        planner=AStarPlanner(simulation_config.planner),
+        config=simulation_config.mission,
+    )
+    mode_switch = build_mode_switch(WaypointFollower())
+    engine = SimulationEngine(
+        city_map, mission, mode_switch, simulation_config, vehicle_config
+    )
+    return MissionScene(city_map=city_map, engine=engine, mode_switch=mode_switch)
+
+
+class TestRestart:
+    """``R`` builds a new mission rather than trying to rewind the old one."""
+
+    def _restartable(self, project_root: Path) -> tuple[SimulationApp, list[int]]:
+        loader = ConfigLoader(project_root=project_root)
+        app_config = loader.load_app_config("configs/app.yaml")
+        calls: list[int] = []
+
+        def rebuild() -> MissionScene:
+            calls.append(1)
+            return _scene(project_root)
+
+        scene = _scene(project_root)
+        app = SimulationApp(
+            city_map=scene.city_map,
+            engine=scene.engine,
+            render_config=app_config.render,
+            theme=Theme.from_config(loader, app_config.render.palette_config_path),
+            mode_switch=scene.mode_switch,
+            restart=rebuild,
+        )
+        return app, calls
+
+    def test_r_asks_for_a_fresh_mission(self, project_root: Path) -> None:
+        app, calls = self._restartable(project_root)
+        pygame.init()
+        _press(pygame.K_r)
+        app.run()
+        assert calls == [1]
+
+    def test_the_app_swaps_to_the_new_engine(self, project_root: Path) -> None:
+        app, _ = self._restartable(project_root)
+        original = app.engine
+        pygame.init()
+        _press(pygame.K_r)
+        app.run()
+        assert app.engine is not original
+
+    def test_the_restarted_mission_starts_from_scratch(self, project_root: Path) -> None:
+        """A restart that inherited the old mission's progress would be useless."""
+        app, _ = self._restartable(project_root)
+        for _ in range(40):
+            app.engine.tick()
+        assert app.engine.stats.ticks > 0
+
+        pygame.init()
+        _press(pygame.K_r)
+        app.run()
+        assert app.engine.stats.ticks == 0
+        assert app.engine.stats.victims_rescued == 0
+
+    def test_the_city_is_rebuilt_too_not_just_the_engine(
+        self, project_root: Path
+    ) -> None:
+        app, _ = self._restartable(project_root)
+        for _ in range(200):
+            app.engine.tick()
+        rescued_before = [v for v in app._city_map.victims if v.status.name == "RESCUED"]  # noqa: SLF001
+        assert rescued_before
+
+        pygame.init()
+        _press(pygame.K_r)
+        app.run()
+        assert all(v.status.name == "TRAPPED" for v in app._city_map.victims)  # noqa: SLF001
+
+    def test_restarting_keeps_the_view_you_were_looking_at(
+        self, project_root: Path
+    ) -> None:
+        """Which view is showing is a window preference, not mission state."""
+        app, _ = self._restartable(project_root)
+        pygame.init()
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_g))
+        _press(pygame.K_r)
+        app.run()
+        assert app._show_grid is True  # noqa: SLF001
+
+    def test_r_does_nothing_without_a_restart_factory(self, app: SimulationApp) -> None:
+        original = app.engine
+        pygame.init()
+        _press(pygame.K_r)
+        app.run()
+        assert app.engine is original
 
 
 class TestViewToggles:

@@ -11,12 +11,15 @@ along the bottom the mission's state, its counters, and a running log of
 what just happened.
 
 Controls
-    ``Escape`` quit, ``Space`` pause, ``Tab`` autonomous/manual driving,
-    ``G`` toggle the occupancy-grid debug view, ``C`` toggle the camera
-    panel, arrow keys / WASD to drive in manual mode.
+    ``Escape`` quit, ``Space`` pause, ``R`` restart the mission, ``Tab``
+    autonomous/manual driving, ``G`` toggle the occupancy-grid debug view,
+    ``C`` toggle the camera panel, arrow keys / WASD to drive in manual mode.
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import pygame
 
@@ -46,6 +49,21 @@ _MAX_TICKS_PER_FRAME = 5
 #: five frames every rendered frame is pure waste — the world cannot change
 #: faster than the tick rate.
 _CAMERA_REFRESH_TICKS = 3
+
+
+@dataclass(frozen=True)
+class MissionScene:
+    """One composed mission: a world, an engine driving it, and its driver.
+
+    Exists so the window can start a *fresh* mission without knowing how one
+    is built. Composing a mission means reading configs and wiring adapters,
+    which is a composition root's job — a renderer that knew how to do it
+    would be reaching several layers down past its own.
+    """
+
+    city_map: CityMap
+    engine: SimulationEngine
+    mode_switch: ModeSwitchController | None = None
 
 
 class ModeSwitchController(ILocalController):
@@ -89,6 +107,7 @@ class SimulationApp:
         theme: Theme,
         mode_switch: ModeSwitchController | None = None,
         sensor_rig: SensorRig | None = None,
+        restart: Callable[[], MissionScene] | None = None,
     ) -> None:
         """Create the app.
 
@@ -103,6 +122,12 @@ class SimulationApp:
                 omits the panel entirely and narrows the window to match —
                 the rig is genuinely optional, not a required dependency of
                 watching a mission.
+            restart: Builds a fresh mission on demand, bound to the ``R``
+                key. ``None`` disables it. Rebuilding from config rather
+                than rewinding state is deliberate: a mission mutates the
+                city, the victims, and the hazard generators, and restoring
+                all of that correctly is far more error-prone than simply
+                composing a new one.
         """
         self._city_map = city_map
         self._engine = engine
@@ -110,12 +135,23 @@ class SimulationApp:
         self._theme = theme
         self._mode_switch = mode_switch
         self._sensor_rig = sensor_rig
+        self._restart = restart
         self._paused = False
         self._show_grid = False
         self._show_cameras = sensor_rig is not None
         self._accumulated_seconds = 0.0
         self._camera_frames: list[CameraFrame] = []
         self._ticks_since_capture = _CAMERA_REFRESH_TICKS
+
+    @property
+    def engine(self) -> SimulationEngine:
+        """The engine currently being driven.
+
+        Not necessarily the one passed in: restarting swaps it, and a caller
+        reporting the outcome afterwards wants the mission that actually
+        just ran.
+        """
+        return self._engine
 
     def run(self) -> None:
         """Open the window and block until the user closes it."""
@@ -250,6 +286,26 @@ class SimulationApp:
             logger.info("View: %s", "occupancy grid" if self._show_grid else "world")
         elif key == pygame.K_c and self._sensor_rig is not None:
             self._show_cameras = not self._show_cameras
+        elif key == pygame.K_r and self._restart is not None:
+            self._restart_mission()
+
+    def _restart_mission(self) -> None:
+        """Swap in a freshly composed mission, keeping the view settings.
+
+        Which view you were looking at is a preference about the window, not
+        state belonging to the mission, so ``G`` and ``C`` survive a restart
+        while everything the mission owns does not.
+        """
+        assert self._restart is not None
+        scene = self._restart()
+        self._city_map = scene.city_map
+        self._engine = scene.engine
+        self._mode_switch = scene.mode_switch
+        self._paused = False
+        self._accumulated_seconds = 0.0
+        self._camera_frames = []
+        self._ticks_since_capture = _CAMERA_REFRESH_TICKS
+        logger.info("Mission restarted")
 
     def _advance(self, frame_seconds: float) -> None:
         """Run however many whole simulation ticks this frame has earned."""

@@ -43,6 +43,7 @@ python scripts/run_simulation.py --headless   # no window, prints the outcome
 |---|---|
 | `Escape` | quit |
 | `Space` | pause / resume |
+| `R` | restart the mission |
 | `Tab` | toggle autonomous ↔ manual driving |
 | `G` | toggle the occupancy-grid debug view |
 | `C` | toggle the camera panel |
@@ -61,6 +62,11 @@ The window is laid out so a mission can be followed without narration:
 │ phase │ counters │ event log │ battery/health │
 └───────────────────────────────────────────────┘
 ```
+
+`R` restarts without closing the window. It rebuilds the mission from config
+rather than rewinding, so it replays *identically* — the hazards are seeded. For a
+different disaster on the same map, change `hazards.seed` in
+`configs/simulation.yaml`.
 
 Press `G` and the city is replaced by the occupancy grid the planner
 actually reasons over — the 0-6 codes, colour-coded and numbered. Today it

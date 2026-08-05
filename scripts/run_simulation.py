@@ -10,8 +10,9 @@ Usage:
     python scripts/run_simulation.py [--config configs/app.yaml]
     python scripts/run_simulation.py --headless [--max-ticks 5000]
 
-Controls (windowed): Escape quit, Space pause, Tab toggle manual driving,
-arrow keys / WASD to drive.
+Controls (windowed): Escape quit, Space pause, R restart the mission, Tab
+toggle manual driving, G occupancy-grid view, C camera panel, arrow keys /
+WASD to drive.
 """
 
 from __future__ import annotations
@@ -26,7 +27,11 @@ from sentry_ai.config.schema import AppConfig
 from sentry_ai.domain.map import CityMap
 from sentry_ai.domain.occupancy import OccupancyGrid
 from sentry_ai.navigation.astar import AStarPlanner
-from sentry_ai.rendering.simulation_app import SimulationApp, build_mode_switch
+from sentry_ai.rendering.simulation_app import (
+    MissionScene,
+    SimulationApp,
+    build_mode_switch,
+)
 from sentry_ai.rendering.theme import Theme
 from sentry_ai.sensors.palette import SensorPalette
 from sentry_ai.sensors.rig import SensorRig
@@ -47,6 +52,44 @@ def main() -> int:
     setup_logging(app_config.logging_config_path)
     logger = get_logger(__name__)
 
+    scene = _build_scene(loader, app_config)
+    logger.info(
+        "Mission ready: %dx%d city, %d victim(s), %d fire(s)",
+        scene.city_map.width,
+        scene.city_map.height,
+        len(scene.city_map.victims),
+        len(scene.city_map.fires),
+    )
+
+    if args.headless:
+        scene.engine.run(max_ticks=args.max_ticks)
+        engine = scene.engine
+    else:
+        app = SimulationApp(
+            city_map=scene.city_map,
+            engine=scene.engine,
+            render_config=app_config.render,
+            theme=Theme.from_config(loader, app_config.render.palette_config_path),
+            mode_switch=scene.mode_switch,
+            sensor_rig=_build_sensor_rig(loader, app_config),
+            restart=lambda: _build_scene(loader, app_config),
+        )
+        app.run()
+        # After restarts this is a different engine to the one we started
+        # with, and it is the mission that actually just ran.
+        engine = app.engine
+
+    _report(engine.stats, engine.mission)
+    return 0
+
+
+def _build_scene(loader: ConfigLoader, app_config: AppConfig) -> MissionScene:
+    """Compose a complete, unstarted mission.
+
+    Called once at launch and again for every ``R`` press, so restarting is
+    exactly "build another one" rather than an attempt to rewind a world
+    that a mission has already mutated.
+    """
     simulation_config, vehicle_config = _load_mission_configs(loader, app_config)
     city_map = CityMap.from_config(loader.load_yaml(app_config.map_config_path))
     mission = MissionController(
@@ -64,29 +107,7 @@ def main() -> int:
         vehicle_config=vehicle_config,
         world_processes=build_world_processes(simulation_config.hazards),
     )
-    logger.info(
-        "Mission ready: %dx%d city, %d victim(s), %d fire(s)",
-        city_map.width,
-        city_map.height,
-        len(city_map.victims),
-        len(city_map.fires),
-    )
-
-    if args.headless:
-        engine.run(max_ticks=args.max_ticks)
-    else:
-        theme = Theme.from_config(loader, app_config.render.palette_config_path)
-        SimulationApp(
-            city_map=city_map,
-            engine=engine,
-            render_config=app_config.render,
-            theme=theme,
-            mode_switch=mode_switch,
-            sensor_rig=_build_sensor_rig(loader, app_config),
-        ).run()
-
-    _report(engine.stats, mission)
-    return 0
+    return MissionScene(city_map=city_map, engine=engine, mode_switch=mode_switch)
 
 
 def _parse_args() -> argparse.Namespace:
