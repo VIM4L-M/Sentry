@@ -30,6 +30,7 @@ from sentry_ai.config.schema import (
     SensorConfig,
     SimulationConfig,
     VehicleConfig,
+    VictimRiskConfig,
 )
 
 _DEFAULT_APP_CONFIG = "configs/app.yaml"
@@ -193,6 +194,9 @@ class ConfigLoader:
             min_battery_to_continue=_as_float(
                 mission_data, "min_battery_to_continue", MissionConfig.min_battery_to_continue
             ),
+            urgency_weight=_as_float(
+                mission_data, "urgency_weight", MissionConfig.urgency_weight
+            ),
         )
         planner = PlannerConfig(
             fire_risk_penalty=_as_float(
@@ -286,6 +290,7 @@ def _hazard_config(data: dict[str, Any]) -> HazardConfig:
     """Build the hazard config from the ``hazards`` section of ``simulation.yaml``."""
     fire_data = _require_mapping(data.get("fire", {}), "simulation.hazards.fire")
     debris_data = _require_mapping(data.get("debris", {}), "simulation.hazards.debris")
+    victim_data = _require_mapping(data.get("victims", {}), "simulation.hazards.victims")
 
     fire = FireSpreadConfig(
         enabled=_as_bool(fire_data, "enabled", FireSpreadConfig.enabled),
@@ -312,10 +317,20 @@ def _hazard_config(data: dict[str, Any]) -> HazardConfig:
         ),
         max_collapses=_as_int(debris_data, "max_collapses", DebrisCollapseConfig.max_collapses),
     )
+    victims = VictimRiskConfig(
+        enabled=_as_bool(victim_data, "enabled", VictimRiskConfig.enabled),
+        interval_seconds=_as_float(
+            victim_data, "interval_seconds", VictimRiskConfig.interval_seconds
+        ),
+        base_drain=_as_int(victim_data, "base_drain", VictimRiskConfig.base_drain),
+        fire_drain=_as_int(victim_data, "fire_drain", VictimRiskConfig.fire_drain),
+        fire_radius=_as_float(victim_data, "fire_radius", VictimRiskConfig.fire_radius),
+    )
     return HazardConfig(
         seed=_as_int(data, "seed", HazardConfig.seed),
         fire=fire,
         debris=debris,
+        victims=victims,
     )
 
 

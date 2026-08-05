@@ -216,6 +216,133 @@ class TestReactingToWorldChanges:
         assert mission.next_waypoint() is not None
 
 
+class TestChoosingWhoToSaveFirst:
+    """Ranking is by planned route cost, discounted by how urgent a victim is."""
+
+    # 11x3 of open ground. The vehicle sits at (5, 1) between a victim two
+    # tiles east and one four tiles west.
+    _MAP: dict[str, Any] = {
+        "width": 11,
+        "height": 3,
+        "grid": ["...........", "...........", "..........."],
+        "safe_zone": {"position": [0, 0], "radius": 1, "capacity": 4},
+        "vehicle_start": [5, 1],
+        "victims": [
+            {"id": "close_and_stable", "position": [7, 1]},
+            {"id": "far_and_critical", "position": [1, 1]},
+        ],
+        "fires": [],
+    }
+
+    def _wounded(self, urgency: float) -> tuple[MissionController, CityMap]:
+        city_map = CityMap.from_config(self._MAP)
+        city_map.victims[1].health = 10
+        return _controller(city_map, urgency_weight=urgency), city_map
+
+    def test_without_urgency_it_takes_the_cheapest_victim_to_reach(self) -> None:
+        mission, city_map = self._wounded(urgency=0.0)
+        mission.update(city_map.vehicle, _TICK)
+        assert mission.route.goal == Position(7, 1)
+
+    def test_urgency_makes_it_cross_to_the_dying_one(self) -> None:
+        """The whole point: a victim running out of time is worth a detour."""
+        mission, city_map = self._wounded(urgency=14.0)
+        mission.update(city_map.vehicle, _TICK)
+        assert mission.route.goal == Position(1, 1)
+
+    def test_urgency_changes_nothing_when_everyone_is_healthy(self) -> None:
+        city_map = CityMap.from_config(self._MAP)
+        mission = _controller(city_map, urgency_weight=14.0)
+        mission.update(city_map.vehicle, _TICK)
+        assert mission.route.goal == Position(7, 1)
+
+    def test_ranking_uses_route_cost_not_straight_line_distance(self) -> None:
+        """A victim behind a wall is not close, however near they look."""
+        data: dict[str, Any] = {
+            "width": 5,
+            "height": 3,
+            "grid": [".....", "####.", "....."],
+            "safe_zone": {"position": [0, 0], "radius": 1, "capacity": 4},
+            "vehicle_start": [0, 0],
+            "victims": [
+                {"id": "near_in_air", "position": [0, 2]},
+                {"id": "near_by_road", "position": [3, 0]},
+            ],
+            "fires": [],
+        }
+        city_map = CityMap.from_config(data)
+        mission = _controller(city_map, urgency_weight=0.0)
+        mission.update(city_map.vehicle, _TICK)
+
+        # (0, 2) is two tiles away in a straight line but ten by road.
+        assert mission.route.goal == Position(3, 0)
+
+
+class TestLostVictims:
+    def test_a_lost_victim_is_not_a_rescue_target(self, city_map: CityMap) -> None:
+        city_map.victims[0].status = VictimStatus.LOST
+        mission = _controller(city_map)
+        mission.update(city_map.vehicle, _TICK)
+        assert mission.route.goal != Position(4, 0)
+
+    def test_losses_are_counted_and_announced_once(self, city_map: CityMap) -> None:
+        mission = _controller(city_map)
+        city_map.victims[0].status = VictimStatus.LOST
+        mission.update(city_map.vehicle, _TICK)
+        mission.update(city_map.vehicle, _TICK)
+
+        assert mission.stats.victims_lost == 1
+        announcements = [
+            event for event in mission.events if "arrived too late" in event.message
+        ]
+        assert len(announcements) == 1
+
+    def test_a_mission_completes_even_if_everyone_is_lost(self, city_map: CityMap) -> None:
+        for victim in city_map.victims:
+            victim.status = VictimStatus.LOST
+        mission = _controller(city_map)
+        city_map.vehicle.position = city_map.safe_zone.position
+        mission.update(city_map.vehicle, _TICK)
+        assert mission.phase is MissionPhase.COMPLETED
+        assert mission.stats.victims_lost == 2
+
+
+class TestReadmittingAbandonedVictims:
+    def test_a_world_change_gives_an_abandoned_victim_another_chance(
+        self, city_map: CityMap
+    ) -> None:
+        """A corridor blocked by fire reopens when that fire burns out."""
+        city_map.victims[0].status = VictimStatus.RESCUED  # leave only the sealed one
+        city_map.vehicle.position = Position(4, 0)  # away from home, so it keeps running
+        mission = _controller(city_map)
+        mission.update(city_map.vehicle, _TICK)
+        assert mission.stats.victims_unreachable == 1
+
+        # Open the wall, then tell the controller the world moved.
+        city_map.terrain.pop(Position(2, 1), None)
+        mission.refresh_grid(city_map.vehicle)
+        mission.note_world_change(frozenset({Position(2, 1)}))
+        assert mission.stats.victims_unreachable == 0
+
+        # Re-admission takes effect at the next replan — a vehicle part-way
+        # through a delivery finishes that run first, which is correct.
+        mission.invalidate_route()
+        mission.update(city_map.vehicle, _TICK)
+        assert mission.route.goal == Position(2, 2)
+
+    def test_a_still_unreachable_victim_is_written_off_again(
+        self, city_map: CityMap
+    ) -> None:
+        city_map.victims[0].status = VictimStatus.RESCUED
+        city_map.vehicle.position = Position(4, 0)
+        mission = _controller(city_map)
+        mission.update(city_map.vehicle, _TICK)
+        mission.note_world_change(frozenset({Position(0, 2)}))
+        mission.invalidate_route()
+        mission.update(city_map.vehicle, _TICK)
+        assert mission.stats.victims_unreachable == 1
+
+
 class TestStats:
     def test_display_rows_cover_every_headline_metric(self, city_map: CityMap) -> None:
         mission = _controller(city_map)
@@ -223,6 +350,7 @@ class TestStats:
         assert labels == [
             "Time",
             "Rescued",
+            "Lost",
             "Unreachable",
             "Replans",
             "Collisions",

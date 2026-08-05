@@ -159,7 +159,7 @@ class SimulationEngine:
         self._mission.refresh_grid(vehicle)
         self._mission.record(EventKind.HAZARD, change.description)
         if self._simulation_config.mission.replan_on_blocked_route:
-            self._mission.invalidate_route_if_affected(change.changed_tiles)
+            self._mission.note_world_change(change.changed_tiles)
         return change
 
     def run(self, max_ticks: int) -> MissionStats:

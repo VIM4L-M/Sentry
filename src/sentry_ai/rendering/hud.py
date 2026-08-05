@@ -60,7 +60,7 @@ class HudLayout:
     font_size_px: int = 15
     stats_left_px: int = 220
     stats_column_width_px: int = 190
-    stats_rows_per_column: int = 4
+    stats_rows_per_column: int = 5
     events_left_px: int = 610
     events_rows: int = 5
 

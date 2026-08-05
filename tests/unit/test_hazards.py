@@ -7,14 +7,20 @@ from typing import Any
 
 import pytest
 
-from sentry_ai.config.schema import DebrisCollapseConfig, FireSpreadConfig, HazardConfig
-from sentry_ai.domain.entities import Position
+from sentry_ai.config.schema import (
+    DebrisCollapseConfig,
+    FireSpreadConfig,
+    HazardConfig,
+    VictimRiskConfig,
+)
+from sentry_ai.domain.entities import Position, Victim
 from sentry_ai.domain.enums import TerrainType, VictimStatus
 from sentry_ai.domain.map import CityMap
 from sentry_ai.interfaces.world import WorldChange
 from sentry_ai.simulation.hazards import (
     DebrisCollapseProcess,
     FireSpreadProcess,
+    VictimRiskProcess,
     build_world_processes,
     orthogonal_neighbours,
 )
@@ -318,3 +324,85 @@ class TestBuildWorldProcesses:
             return [obstacle.position.as_tuple() for obstacle in city_map.obstacles]
 
         assert collapse_sites(fire_enabled=True) == collapse_sites(fire_enabled=False)
+
+
+def _risk_process(**overrides: Any) -> VictimRiskProcess:
+    defaults: dict[str, Any] = {"interval_seconds": _STEP}
+    defaults.update(overrides)
+    return VictimRiskProcess(VictimRiskConfig(**defaults))
+
+
+class TestVictimRisk:
+    """Trapped victims deteriorate, which is what makes triage a real decision."""
+
+    def test_a_disabled_process_leaves_victims_alone(self, city_map: CityMap) -> None:
+        _risk_process(enabled=False).advance(city_map, 100.0)
+        assert city_map.victims[0].health == 100
+
+    def test_a_trapped_victim_loses_the_base_drain(self, city_map: CityMap) -> None:
+        # The victim at (5, 4) is well clear of the fire at (2, 1).
+        _risk_process(base_drain=3, fire_drain=0).advance(city_map, _STEP)
+        assert city_map.victims[0].health == 97
+
+    def test_a_victim_beside_a_fire_drains_faster(self, city_map: CityMap) -> None:
+        far = city_map.victims[0]
+        city_map.victims.append(Victim(victim_id="near_fire", position=Position(3, 1)))
+        near = city_map.victims[-1]
+
+        _risk_process(base_drain=1, fire_drain=10, fire_radius=5.0).advance(city_map, _STEP)
+        assert near.health < far.health
+
+    def test_exposure_falls_off_with_distance(self, city_map: CityMap) -> None:
+        city_map.victims.clear()
+        for index, x in enumerate((3, 4, 5)):
+            city_map.victims.append(Victim(victim_id=f"v{index}", position=Position(x, 1)))
+
+        _risk_process(base_drain=0, fire_drain=10, fire_radius=6.0).advance(city_map, _STEP)
+        losses = [100 - victim.health for victim in city_map.victims]
+        assert losses == sorted(losses, reverse=True)
+
+    def test_a_victim_beyond_reach_only_takes_the_base_drain(self, city_map: CityMap) -> None:
+        city_map.victims[0].position = Position(6, 4)
+        _risk_process(base_drain=2, fire_drain=50, fire_radius=1.0).advance(city_map, _STEP)
+        assert city_map.victims[0].health == 98
+
+    def test_health_never_goes_negative(self, city_map: CityMap) -> None:
+        _risk_process(base_drain=250).advance(city_map, _STEP)
+        assert city_map.victims[0].health == 0
+
+    def test_a_victim_who_runs_out_is_lost(self, city_map: CityMap) -> None:
+        _risk_process(base_drain=250).advance(city_map, _STEP)
+        assert city_map.victims[0].status is VictimStatus.LOST
+        assert city_map.victims[0].status.is_rescuable is False
+
+    def test_losing_a_victim_reports_their_tile_so_the_route_is_dropped(
+        self, city_map: CityMap
+    ) -> None:
+        """A route being driven toward someone who just died is worth abandoning."""
+        position = city_map.victims[0].position
+        change = _risk_process(base_drain=250).advance(city_map, _STEP)
+        assert change.changed_tiles == {position}
+        assert "lost" in change.description
+
+    def test_an_ordinary_step_reports_no_change(self, city_map: CityMap) -> None:
+        assert _risk_process(base_drain=1).advance(city_map, _STEP).is_empty
+
+    def test_victims_aboard_the_vehicle_are_safe(self, city_map: CityMap) -> None:
+        """Getting someone aboard has to actually stop the clock for them."""
+        city_map.victims[0].status = VictimStatus.ONBOARD
+        _risk_process(base_drain=50).advance(city_map, _STEP)
+        assert city_map.victims[0].health == 100
+
+    def test_rescued_victims_are_left_alone(self, city_map: CityMap) -> None:
+        city_map.victims[0].status = VictimStatus.RESCUED
+        _risk_process(base_drain=50).advance(city_map, _STEP)
+        assert city_map.victims[0].health == 100
+
+    def test_a_map_with_no_fires_still_works(self, city_map: CityMap) -> None:
+        city_map.fires.clear()
+        _risk_process(base_drain=4, fire_drain=10).advance(city_map, _STEP)
+        assert city_map.victims[0].health == 96
+
+    def test_the_process_is_built_into_the_default_hazard_set(self) -> None:
+        processes = build_world_processes(HazardConfig())
+        assert any(isinstance(process, VictimRiskProcess) for process in processes)

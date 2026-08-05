@@ -83,11 +83,23 @@ _HEADING_CLOCKWISE: tuple[Heading, ...] = (
 
 
 class VictimStatus(Enum):
-    """Lifecycle state of a :class:`~sentry_ai.domain.entities.Victim`."""
+    """Lifecycle state of a :class:`~sentry_ai.domain.entities.Victim`.
+
+    ``LOST`` is terminal and is the cost of arriving too late: a trapped
+    victim's health drains while they wait, and faster beside a fire. It
+    exists so that taking the nearest victim first is a *decision* with
+    consequences rather than the only sensible rule.
+    """
 
     TRAPPED = "trapped"
     ONBOARD = "onboard"
     RESCUED = "rescued"
+    LOST = "lost"
+
+    @property
+    def is_rescuable(self) -> bool:
+        """Whether the vehicle can still do anything for this victim."""
+        return self is VictimStatus.TRAPPED
 
 
 class EntityKind(Enum):

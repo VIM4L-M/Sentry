@@ -17,7 +17,7 @@ from __future__ import annotations
 import pygame
 
 from sentry_ai.common.color import Color
-from sentry_ai.domain.entities import Obstacle, Position, Vehicle
+from sentry_ai.domain.entities import Obstacle, Position, Vehicle, Victim
 from sentry_ai.domain.enums import TerrainType, VictimStatus
 from sentry_ai.domain.map import CityMap
 from sentry_ai.interfaces.navigation import Route
@@ -158,15 +158,34 @@ class MapRenderer:
                 self._flicker,
             )
         for victim in city_map.victims:
-            # Only the still-trapped: someone aboard the vehicle or already
-            # delivered is not at those coordinates any more, and leaving
-            # their glyph behind makes the map disagree with the grid, the
-            # camera frames, and the rescued counter all at once.
-            if victim.status is VictimStatus.TRAPPED:
-                glyphs.draw_victim(
-                    surface, self._tile_rect(victim.position), colors[victim.entity_kind]
-                )
+            self._draw_victim(surface, victim)
         self._draw_vehicle(surface, city_map.vehicle)
+
+    def _draw_victim(self, surface: pygame.Surface, victim: Victim) -> None:
+        """Draw a victim, coloured by how much time they have left.
+
+        Someone aboard the vehicle or already delivered is not at these
+        coordinates any more and is not drawn at all — leaving their glyph
+        behind makes the map disagree with the grid, the camera frames, and
+        the rescued counter all at once.
+
+        The living are drawn reddening toward the warning colour as their
+        health falls, because "which victim is urgent?" is the decision the
+        command center is making and it should be visible. The lost are
+        drawn greyed out rather than removed: erasing them would hide the
+        cost of arriving late.
+        """
+        if victim.status is VictimStatus.RESCUED or victim.status is VictimStatus.ONBOARD:
+            return
+
+        rect = self._tile_rect(victim.position)
+        base = self._theme.entity_colors[victim.entity_kind]
+        if victim.status is VictimStatus.LOST:
+            glyphs.draw_victim(surface, rect, base.blended_with(self._theme.hud.panel, 0.72))
+            return
+        glyphs.draw_victim(
+            surface, rect, base.blended_with(self._theme.hud.warning, 1.0 - victim.health / 100.0)
+        )
 
     def _draw_obstacle(self, surface: pygame.Surface, obstacle: Obstacle) -> None:
         """Draw an obstacle as what it actually is.

@@ -90,11 +90,17 @@ class MissionConfig:
             planner when the vehicle reports its route is obstructed.
         min_battery_to_continue: Battery percentage below which the mission
             controller stops seeking victims and heads for the hospital.
+        urgency_weight: How many tiles of detour a dying victim is worth.
+            Objectives are ranked by planned route cost minus
+            ``urgency_weight * (1 - health/100)``, so at ``0.0`` the
+            controller always takes the cheapest victim to reach and at high
+            values it will cross the city for someone critical.
     """
 
     time_limit_seconds: float = 300.0
     replan_on_blocked_route: bool = True
     min_battery_to_continue: float = 15.0
+    urgency_weight: float = 14.0
 
     def __post_init__(self) -> None:
         if self.time_limit_seconds <= 0.0:
@@ -105,6 +111,10 @@ class MissionConfig:
             raise ConfigValidationError(
                 f"mission.min_battery_to_continue must be within 0.0-100.0, "
                 f"got {self.min_battery_to_continue}"
+            )
+        if self.urgency_weight < 0.0:
+            raise ConfigValidationError(
+                f"mission.urgency_weight must be non-negative, got {self.urgency_weight}"
             )
 
 
@@ -198,6 +208,49 @@ class DebrisCollapseConfig:
 
 
 @dataclass(frozen=True)
+class VictimRiskConfig:
+    """How fast trapped victims deteriorate while they wait.
+
+    Without this a victim beside a fire is in no more danger than one in an
+    empty street, so "grab the nearest one" is always right and the command
+    center never has to make a real choice.
+
+    Attributes:
+        enabled: Whether victims deteriorate at all. ``False`` restores the
+            earlier behaviour where waiting costs a victim nothing.
+        interval_seconds: Simulated time between health steps.
+        base_drain: Health lost per step by any trapped victim.
+        fire_drain: Additional health lost per step at the seat of a fire,
+            scaled linearly down to zero at ``fire_radius``.
+        fire_radius: How far a fire's effect on a victim reaches, in tiles.
+            Deliberately larger than a fire's drawn footprint — smoke and
+            heat hurt well beyond the flames.
+    """
+
+    enabled: bool = True
+    interval_seconds: float = 1.0
+    base_drain: int = 1
+    fire_drain: int = 6
+    fire_radius: float = 4.0
+
+    def __post_init__(self) -> None:
+        if self.interval_seconds <= 0.0:
+            raise ConfigValidationError(
+                f"hazards.victims.interval_seconds must be positive, "
+                f"got {self.interval_seconds}"
+            )
+        if self.fire_radius <= 0.0:
+            raise ConfigValidationError(
+                f"hazards.victims.fire_radius must be positive, got {self.fire_radius}"
+            )
+        for name, value in (("base_drain", self.base_drain), ("fire_drain", self.fire_drain)):
+            if value < 0:
+                raise ConfigValidationError(
+                    f"hazards.victims.{name} must be non-negative, got {value}"
+                )
+
+
+@dataclass(frozen=True)
 class HazardConfig:
     """Everything that changes the city without the vehicle touching it.
 
@@ -207,11 +260,13 @@ class HazardConfig:
             different disaster from the same starting map.
         fire: Fire spread model.
         debris: Building-collapse model.
+        victims: How fast trapped victims deteriorate.
     """
 
     seed: int = 20250805
     fire: FireSpreadConfig = field(default_factory=FireSpreadConfig)
     debris: DebrisCollapseConfig = field(default_factory=DebrisCollapseConfig)
+    victims: VictimRiskConfig = field(default_factory=VictimRiskConfig)
 
 
 @dataclass(frozen=True)

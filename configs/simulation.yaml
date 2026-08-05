@@ -15,6 +15,11 @@ mission:
   # Below this battery percentage the controller abandons the search and
   # drives straight for the hospital while it still can.
   min_battery_to_continue: 15.0
+  # How many tiles of detour a dying victim is worth. Objectives are ranked
+  # by planned route cost minus urgency_weight * (1 - health/100), so 0.0
+  # always takes the cheapest victim to reach and large values will cross
+  # the city for someone critical.
+  urgency_weight: 14.0
 
 planner:
   # Extra A* cost for a tile near a known fire. Raise to make the planner
@@ -47,6 +52,21 @@ hazards:
     ignition_chance: 0.16
     max_radius: 3
     max_active_fires: 12
+
+  # Trapped victims lose health while they wait, much faster beside a fire.
+  # This is what makes "which victim next?" a real decision instead of a
+  # lookup of the nearest one — set enabled: false and waiting costs
+  # a victim nothing again.
+  victims:
+    enabled: true
+    interval_seconds: 1.0
+    # Health lost per step anywhere, and additionally at the seat of a fire
+    # falling linearly to zero at fire_radius tiles away.
+    base_drain: 1
+    fire_drain: 10
+    # Larger than a fire's drawn footprint on purpose: smoke and heat reach
+    # further than the flames.
+    fire_radius: 5.0
 
   # The dynamic obstacle: a weakened facade drops into the street beside
   # it, on a tile the planner already believed was clear. This is what

@@ -4,6 +4,11 @@
 # character per tile, resolved through the legend below (which extends/
 # overrides sentry_ai.domain.map.DEFAULT_TERRAIN_LEGEND).
 #
+# The block at x=5-8, y=16-19 has a blown-out wall at (8, 17): victim_03 is
+# trapped inside it and that breach is the only way in. fire_02 sits deeper
+# in the same block, close enough to endanger them and far enough that its
+# footprint can never seal the breach.
+#
 #   .  open ground        x  collapsed building
 #   #  building           r  rubble
 #   =  road                t  tree
@@ -45,7 +50,7 @@ grid:
   - "=============================="
   - "...=...........=..........=..."
   - "...=.####......=..#####...=..."
-  - "..t=.####......=..#####...=..."
+  - "..t=.###.......=..#####...=..."
   - "..t=.####......=..#####...=..."
   - "...=.####......=..........=..."
 
@@ -77,6 +82,6 @@ fires:
     intensity: 0.7
     radius: 2
   - id: "fire_02"
-    position: [6, 17]
+    position: [5, 16]
     intensity: 0.5
     radius: 1

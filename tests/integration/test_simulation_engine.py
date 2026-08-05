@@ -61,19 +61,15 @@ def _build(
 
 
 class TestAutonomousMission:
-    def test_completes_and_rescues_every_reachable_victim(self, project_root: Path) -> None:
+    def test_completes_and_rescues_everyone(self, project_root: Path) -> None:
         engine, city_map = _build(project_root)
         stats = engine.run(max_ticks=_MAX_TICKS)
 
         assert engine.mission.phase is MissionPhase.COMPLETED
-        assert stats.victims_rescued > 0
-        # victim_03 is sealed inside a building block on the shipped map.
-        assert stats.victims_rescued + stats.victims_unreachable == len(city_map.victims)
-        assert all(
-            victim.status is VictimStatus.RESCUED
-            for victim in city_map.victims
-            if victim.victim_id != "victim_03"
-        )
+        assert stats.victims_rescued == len(city_map.victims)
+        assert stats.victims_lost == 0
+        assert stats.victims_unreachable == 0
+        assert all(victim.status is VictimStatus.RESCUED for victim in city_map.victims)
 
     def test_ends_with_the_vehicle_home_and_empty(self, project_root: Path) -> None:
         engine, city_map = _build(project_root)
@@ -174,6 +170,29 @@ class TestMissionUnderHazards:
         assert engine.mission.phase is MissionPhase.COMPLETED
         assert stats.victims_rescued > 0
         assert stats.victims_rescued + stats.victims_unreachable == len(city_map.victims)
+
+    def test_nobody_is_left_behind_when_the_city_is_burning(
+        self, project_root: Path
+    ) -> None:
+        """The headline outcome: every victim out, none lost, none stranded."""
+        engine, city_map = _build(project_root, with_hazards=True)
+        stats = engine.run(max_ticks=_MAX_TICKS)
+
+        assert stats.victims_rescued == len(city_map.victims)
+        assert stats.victims_lost == 0
+        assert stats.victims_unreachable == 0
+
+    def test_victims_beside_a_fire_arrive_in_worse_shape(
+        self, project_root: Path
+    ) -> None:
+        """Proximity to fire has to actually cost a victim something."""
+        engine, city_map = _build(project_root, with_hazards=True)
+        engine.run(max_ticks=_MAX_TICKS)
+
+        by_id = {victim.victim_id: victim for victim in city_map.victims}
+        # victim_03 is trapped in the block with fire_02; victim_04 is
+        # stranded in the open with nothing burning near them.
+        assert by_id["victim_03"].health < by_id["victim_04"].health
 
     def test_hazards_actually_fire_during_a_mission(self, project_root: Path) -> None:
         engine, _ = _build(project_root, with_hazards=True)

@@ -134,6 +134,66 @@ The onboard camera is 9x9 tiles at 16 px — odd-sized so the vehicle sits dead 
 and clamped at the map edges so the frame never changes shape. A convolutional network
 cannot accept a frame that shrinks in a corner.
 
+### Victims are on a clock
+
+`VictimRiskProcess` drains a trapped victim's health each second, much faster the
+closer they are to a fire. Before it, a victim beside a fire was in exactly as much
+danger as one in an empty street, "go to the nearest one" was always right, and the
+command center never had to make a choice worth calling a decision.
+
+It takes no random generator. Deterioration is a consequence of where a victim is, not
+of luck — two identical missions must lose exactly the same people.
+
+A victim who runs out becomes `VictimStatus.LOST`, and that tile is reported as changed
+so the route is dropped: a plan being driven toward someone who has just died is worth
+abandoning immediately.
+
+### Objectives are ranked by route cost, discounted by urgency
+
+Selection used straight-line distance, which is simply wrong on a city with walls — a
+victim five tiles away through a building is not closer than one eight tiles down a
+road. `MissionController._most_urgent_victim` now plans to every candidate and ranks by
+`route.cost - urgency_weight * (1 - health/100)`. Four A\* runs per replan on a
+600-cell grid costs nothing, and the routes are kept rather than re-planned.
+
+On the shipped map this changes nothing, because the most urgent victim also happens to
+be the cheapest to reach. That is worth stating plainly rather than claiming an effect
+the demo does not show; `tests/unit/test_mission.py::TestChoosingWhoToSaveFirst` proves
+the mechanism on a map built to separate the two.
+
+### Rubble does not burn, and that was not cosmetic
+
+Fire originally spread through rubble and collapsed buildings as well as buildings and
+trees. A trapped victim's own tile survives being set alight — `VICTIM` outranks `FIRE`
+on the grid — but the tiles *around* them do not. So a fire taking hold in a rubble
+field walled victim_02 off completely, and the mission ended having left someone behind
+for a reason the vehicle could not have anticipated or avoided.
+
+Restricting fuel to standing buildings and trees is both more physically honest
+(masonry does not burn) and removes that failure mode.
+
+### An abandoned victim gets another chance when the world moves
+
+Writing a victim off used to be permanent. With fire that spreads *and burns out*, a
+corridor blocked at one moment can reopen at the next, so `note_world_change` clears the
+abandoned list. Re-admission cannot loop — a victim still unreachable is written off
+again in the same pass — and takes effect at the next replan, so a vehicle part way
+through a delivery finishes that run rather than turning around mid-street.
+
+The final `victims_unreachable` figure is settled from the world at mission end rather
+than accumulated, because a running tally that gets reset by re-admission under-reports
+who was actually left behind.
+
+### The shipped map now has a way in to victim_03
+
+The block at x=5-8, y=16-19 has a blown-out wall at (8, 17). victim_03 is inside it and
+fire_02 sits deeper in the same block — close enough to endanger them, far enough that
+its footprint can never seal the breach. A full mission now rescues all four.
+
+Unreachable-objective handling is still covered, on purpose-built maps in
+`tests/unit/test_mission.py`, rather than by shipping a demo that always leaves someone
+behind.
+
 ## Presentation
 
 A separate, later pass, prompted by a review observing that the engineering was ahead

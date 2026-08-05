@@ -11,6 +11,9 @@ reasoned about separately:
   beside it. This is the specification's dynamic obstacle: something that
   appears mid-mission on a tile the planner already believed was clear, and
   the thing that actually forces replanning.
+* :class:`VictimRiskProcess` — trapped victims lose health while they wait,
+  faster beside a fire. This is what turns "which victim next?" into a real
+  decision instead of a lookup of the nearest one.
 
 Both are seeded and deterministic. Given the same config and the same tick
 sequence a mission produces byte-identical hazards, which is what makes
@@ -23,8 +26,13 @@ import random
 from collections.abc import Iterator
 
 from sentry_ai.common.logging_config import get_logger
-from sentry_ai.config.schema import DebrisCollapseConfig, FireSpreadConfig, HazardConfig
-from sentry_ai.domain.entities import FireSource, Obstacle, Position
+from sentry_ai.config.schema import (
+    DebrisCollapseConfig,
+    FireSpreadConfig,
+    HazardConfig,
+    VictimRiskConfig,
+)
+from sentry_ai.domain.entities import FireSource, Obstacle, Position, Victim
 from sentry_ai.domain.enums import TerrainType, VictimStatus
 from sentry_ai.domain.map import CityMap
 from sentry_ai.domain.occupancy import tiles_within
@@ -32,18 +40,20 @@ from sentry_ai.interfaces.world import IWorldProcess, WorldChange
 
 logger = get_logger(__name__)
 
-#: Terrain that will carry a fire. Roads and open ground are deliberately
-#: absent: a fire that could cross tarmac would sever the road network and
-#: turn every mission into a coin flip. Fire threatens victims; debris
-#: threatens routes.
-_FLAMMABLE_TERRAIN = frozenset(
-    {
-        TerrainType.BUILDING,
-        TerrainType.COLLAPSED_BUILDING,
-        TerrainType.RUBBLE,
-        TerrainType.TREE,
-    }
-)
+#: Terrain that will carry a fire: a standing building full of contents, or
+#: a tree. Everything else is deliberately absent.
+#:
+#: Roads and open ground, because a fire that crossed tarmac would sever the
+#: road network and turn every mission into a coin flip.
+#:
+#: Rubble and collapsed buildings, because masonry does not burn — and
+#: because letting it burn had a consequence worth spelling out. A trapped
+#: victim's own tile survives being set alight (the ``VICTIM`` code outranks
+#: ``FIRE`` on the grid) but the tiles *around* them do not, so a fire
+#: taking hold in a rubble field walls the victim off completely. That is
+#: how victim_02, who lies under rubble beside more rubble, became
+#: unreachable through no decision the vehicle made.
+_FLAMMABLE_TERRAIN = frozenset({TerrainType.BUILDING, TerrainType.TREE})
 
 #: Intensity a newly-ignited fire starts at — high enough to survive its
 #: first burn-out check, low enough that it starts as a single tile.
@@ -312,6 +322,72 @@ class DebrisCollapseProcess(_PeriodicProcess):
         return tiles
 
 
+class VictimRiskProcess(_PeriodicProcess):
+    """Drains trapped victims' health, faster the closer they are to fire.
+
+    This is what makes the command center's objective ordering a real
+    decision. Without it, waiting costs a victim nothing, "go to the nearest
+    one" is always optimal, and there is no reason for a planner — learned
+    or otherwise — to ever weigh one victim against another.
+
+    Deliberately has no random generator: deterioration is a consequence of
+    where a victim is, not of luck. Two identical missions must kill exactly
+    the same people.
+    """
+
+    def __init__(self, config: VictimRiskConfig) -> None:
+        """Create the process.
+
+        Args:
+            config: Drain rates and how far a fire's effect reaches.
+        """
+        super().__init__(config.interval_seconds, config.enabled)
+        self._config = config
+
+    def step(self, city_map: CityMap) -> WorldChange:
+        """Age every trapped victim, and report the ones who did not make it.
+
+        A lost victim's tile is reported as changed so the command center
+        replans: a route being driven toward someone who has just died is a
+        route worth abandoning immediately.
+        """
+        lost: set[Position] = set()
+        for victim in city_map.victims:
+            if not victim.status.is_rescuable:
+                continue
+            victim.health = max(0, victim.health - self._drain_for(victim, city_map))
+            if victim.health == 0:
+                victim.status = VictimStatus.LOST
+                lost.add(victim.position)
+                logger.warning("Lost %s at %s", victim.victim_id, victim.position.as_tuple())
+
+        if not lost:
+            return WorldChange.none()
+        return WorldChange(
+            changed_tiles=frozenset(lost),
+            description=f"lost {len(lost)} victim(s)",
+        )
+
+    def _drain_for(self, victim: Victim, city_map: CityMap) -> int:
+        """Health this victim loses this step, given the nearest fire."""
+        return self._config.base_drain + round(
+            self._config.fire_drain * self._fire_exposure(victim.position, city_map)
+        )
+
+    def _fire_exposure(self, position: Position, city_map: CityMap) -> float:
+        """Closeness to the nearest fire, ``1.0`` at its seat and ``0.0`` beyond reach.
+
+        Measured to the fire *source* rather than its drawn footprint, so a
+        victim is endangered by heat and smoke before the flames arrive.
+        """
+        if not city_map.fires:
+            return 0.0
+        nearest = min(position.distance_to(fire.position) for fire in city_map.fires)
+        if nearest >= self._config.fire_radius:
+            return 0.0
+        return 1.0 - nearest / self._config.fire_radius
+
+
 def build_world_processes(config: HazardConfig) -> list[IWorldProcess]:
     """Every hazard process a mission runs, in the order the engine drives them.
 
@@ -323,4 +399,8 @@ def build_world_processes(config: HazardConfig) -> list[IWorldProcess]:
     return [
         FireSpreadProcess(config.fire, random.Random(seeds.randrange(2**32))),
         DebrisCollapseProcess(config.debris, random.Random(seeds.randrange(2**32))),
+        # Victim risk runs last so it sees the fires this tick produced, and
+        # takes no generator at all — deterioration is a consequence of
+        # where a victim is, not of luck.
+        VictimRiskProcess(config.victims),
     ]
