@@ -20,7 +20,7 @@ from sentry_ai.config.schema import MissionConfig
 from sentry_ai.domain.entities import Position, Vehicle
 from sentry_ai.domain.enums import VictimStatus
 from sentry_ai.domain.map import CityMap
-from sentry_ai.domain.occupancy import OccupancyCode, OccupancyGrid
+from sentry_ai.domain.occupancy import OccupancyGrid
 from sentry_ai.interfaces.navigation import IRoutePlanner, Route
 
 logger = get_logger(__name__)
@@ -52,6 +52,8 @@ class MissionStats:
     replans: int = 0
     collisions: int = 0
     tiles_travelled: int = 0
+    hazard_events: int = 0
+    routes_cut_by_hazards: int = 0
     failure_reason: str = ""
 
     def as_display_rows(self) -> list[tuple[str, str]]:
@@ -63,6 +65,8 @@ class MissionStats:
             ("Replans", str(self.replans)),
             ("Collisions", str(self.collisions)),
             ("Tiles", str(self.tiles_travelled)),
+            ("Hazards", str(self.hazard_events)),
+            ("Routes cut", str(self.routes_cut_by_hazards)),
         ]
 
 
@@ -114,6 +118,25 @@ class MissionController:
         self._route = Route.unreachable()
         self._route_index = 0
 
+    def invalidate_route_if_affected(self, changed_tiles: frozenset[Position]) -> bool:
+        """Drop the route when a world change touches a tile it still relies on.
+
+        Only the *unvisited* tail of the route matters: debris landing
+        behind the vehicle costs nothing, debris landing ahead of it costs
+        the whole plan. Returns whether the route was discarded, so the
+        caller can count how often hazards actually cut a plan.
+        """
+        if self._route.is_empty or not changed_tiles:
+            return False
+        remaining = self._route.waypoints[self._route_index :]
+        if not any(waypoint in changed_tiles for waypoint in remaining):
+            return False
+
+        self.invalidate_route()
+        self.stats.routes_cut_by_hazards += 1
+        logger.info("World changed under the active route — replanning")
+        return True
+
     # ------------------------------------------------------------------
     # Tick
     # ------------------------------------------------------------------
@@ -129,7 +152,7 @@ class MissionController:
 
         self.stats.ticks += 1
         self.stats.elapsed_seconds += delta_seconds
-        self._sync_grid(vehicle)
+        self.refresh_grid(vehicle)
         self._advance_route(vehicle)
         self._handle_arrivals(vehicle)
 
@@ -138,10 +161,15 @@ class MissionController:
         if self.next_waypoint() is None:
             self._replan(vehicle)
 
-    def _sync_grid(self, vehicle: Vehicle) -> None:
-        """Refresh the belief map from the world, then stamp the vehicle on it."""
+    def refresh_grid(self, vehicle: Vehicle) -> None:
+        """Rebuild the belief map from the world, then stamp the vehicle on it.
+
+        Public because the engine also calls it the moment a hazard changes
+        the city: the command center must not keep planning against a map
+        that a collapse has already made wrong.
+        """
         self.grid = OccupancyGrid.from_city_map(self.city_map)
-        self.grid.mark(vehicle.position, OccupancyCode.VEHICLE)
+        self.grid.mark_vehicle(vehicle.position)
 
     def _advance_route(self, vehicle: Vehicle) -> None:
         """Consume waypoints the vehicle has already reached."""

@@ -29,6 +29,7 @@ from sentry_ai.navigation.astar import AStarPlanner
 from sentry_ai.rendering.simulation_app import SimulationApp, build_mode_switch
 from sentry_ai.rendering.theme import Theme
 from sentry_ai.simulation.engine import SimulationEngine
+from sentry_ai.simulation.hazards import build_world_processes
 from sentry_ai.simulation.mission import MissionController, MissionStats
 from sentry_ai.simulation.waypoint_follower import WaypointFollower
 
@@ -59,6 +60,7 @@ def main() -> int:
         controller=mode_switch,
         simulation_config=simulation_config,
         vehicle_config=vehicle_config,
+        world_processes=build_world_processes(simulation_config.hazards),
     )
     logger.info(
         "Mission ready: %dx%d city, %d victim(s), %d fire(s)",

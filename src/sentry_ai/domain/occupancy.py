@@ -167,7 +167,7 @@ class OccupancyGrid:
             if victim.status is VictimStatus.TRAPPED:
                 grid.mark(victim.position, OccupancyCode.VICTIM)
         grid.mark(city_map.safe_zone.position, OccupancyCode.HOSPITAL)
-        grid.mark(city_map.vehicle.position, OccupancyCode.VEHICLE)
+        grid.mark_vehicle(city_map.vehicle.position)
         return grid
 
     # ------------------------------------------------------------------
@@ -227,20 +227,32 @@ class OccupancyGrid:
         self._require_in_bounds(position)
         self.cells[position.y, position.x] = code
 
+    def mark_vehicle(self, position: Position) -> None:
+        """Stamp the vehicle at ``position`` — unless that cell is on fire.
+
+        Fire outranks the vehicle marker because fire is the fact that
+        changes decisions: the planner must keep treating the cell as
+        dangerous, and
+        :class:`~sentry_ai.simulation.vehicle_controller.VehicleController`
+        reads this grid to decide whether the vehicle is burning. Stamping
+        ``VEHICLE`` over it would silently make ``fire_damage_per_tick``
+        unreachable. Nothing is lost visually: the renderer draws the
+        vehicle from the city map, never from this grid.
+
+        Raises:
+            DomainValidationError: If ``position`` is outside the grid.
+        """
+        if self.code_at(position) is not OccupancyCode.FIRE:
+            self.mark(position, OccupancyCode.VEHICLE)
+
     def mark_radius(self, center: Position, radius: int, code: OccupancyCode) -> None:
         """Write ``code`` across every in-bounds cell within ``radius`` of ``center``.
 
         Uses Euclidean distance, so a fire's footprint is a disc rather than
         a square. Out-of-bounds cells are skipped, not an error.
         """
-        for dy in range(-radius, radius + 1):
-            for dx in range(-radius, radius + 1):
-                x, y = center.x + dx, center.y + dy
-                if x < 0 or y < 0:
-                    continue
-                position = Position(x, y)
-                if self.in_bounds(position) and center.distance_to(position) <= radius:
-                    self.cells[y, x] = code
+        for position in tiles_within(center, radius, self.width, self.height):
+            self.cells[position.y, position.x] = code
 
     def _require_in_bounds(self, position: Position) -> None:
         if not self.in_bounds(position):
@@ -248,5 +260,29 @@ class OccupancyGrid:
                 f"Position {position.as_tuple()} is outside the "
                 f"{self.width}x{self.height} occupancy grid"
             )
+
+
+def tiles_within(center: Position, radius: int, width: int, height: int) -> list[Position]:
+    """Every in-bounds tile whose center lies within ``radius`` of ``center``.
+
+    The one definition of a circular footprint in the codebase. The
+    occupancy grid uses it to stamp fire onto cells, and
+    :mod:`sentry_ai.simulation.hazards` uses it to work out which tiles a
+    spreading fire just gained or lost — so what the planner routes around
+    and what the fire model thinks it covers can never disagree.
+
+    Distance is Euclidean, so the result is a disc, not a square. Returned
+    in row-major order, which makes callers that sample from it reproducible.
+    """
+    tiles: list[Position] = []
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            x, y = center.x + dx, center.y + dy
+            if x < 0 or y < 0 or x >= width or y >= height:
+                continue
+            position = Position(x, y)
+            if center.distance_to(position) <= radius:
+                tiles.append(position)
+    return tiles
 
 

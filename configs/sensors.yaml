@@ -1,0 +1,85 @@
+# Camera network for the disaster city.
+#
+# Two readers share this file, each owning one section:
+#   - ConfigLoader.load_sensor_config()  -> tile_size_px, cameras, onboard, degradation
+#   - SensorPalette.from_config()        -> palette
+#
+# This is the same arrangement app.yaml has with render.yaml: the geometry
+# is application config, the colors are a palette.
+
+# Pixels per tile for the fixed CCTV cameras. 16 px against the 16x10-tile
+# footprints below gives 256x160 frames — both multiples of 32, which is
+# what YOLO's stride wants, and small enough to train YOLOv8n and a modest
+# autoencoder on thousands of samples on a laptop GPU.
+tile_size_px: 16
+
+# Four fixed cameras covering the whole 30x20 city. The two columns overlap
+# by two tiles rather than butting up exactly: real camera networks overlap,
+# and it means some victims are seen by two cameras at once — which is the
+# duplicate the command center's merge step has to cope with. Coverage and
+# overlap are both asserted in tests/unit/test_sensor_rig.py.
+cameras:
+  - id: "cctv_nw"
+    origin: [0, 0]
+    size: [16, 10]
+  - id: "cctv_ne"
+    origin: [14, 0]
+    size: [16, 10]
+  - id: "cctv_sw"
+    origin: [0, 10]
+    size: [16, 10]
+  - id: "cctv_se"
+    origin: [14, 10]
+    size: [16, 10]
+
+# The vehicle's own camera. Square and odd-sized so the vehicle sits dead
+# centre — centring is worth more here than a stride-friendly frame size,
+# because this view feeds local obstacle avoidance rather than YOLO.
+onboard:
+  id: "onboard"
+  span_tiles: 9
+  tile_size_px: 16
+
+# Corruption applied to a clean frame to produce the (noisy, clean) pairs
+# the Unit IV denoising autoencoder trains on. Applied in optical-then-
+# electronic order: blur, then smoke, then sensor noise.
+degradation:
+  # Peak opacity of the smoke field. 0.0 disables smoke entirely.
+  smoke_density: 0.45
+  # Grey level smoke blends toward.
+  smoke_grey: 150
+  # Number of 3-tap smoothing passes. 0 leaves the frame sharp.
+  blur_radius: 1
+  # Standard deviation of additive Gaussian sensor noise, in 8-bit levels.
+  noise_std: 8.0
+
+# What the cameras see. Deliberately NOT the same palette as the operator
+# display in render.yaml: this one defines what the detector is trained on,
+# so restyling the human-facing map must not silently invalidate a model.
+palette:
+  # Peak per-pixel brightness variation. Zero gives flat colour blocks that
+  # a detector can separate by reading one pixel, which teaches it nothing.
+  texture_jitter: 12
+
+  # Tiles outside the map, which the onboard camera sees when it is clamped
+  # against an edge.
+  void: [10, 10, 12]
+
+  terrain:
+    open_ground: [96, 92, 84]
+    road: [70, 70, 74]
+    building: [120, 116, 108]
+    collapsed_building: [86, 74, 62]
+    rubble: [104, 92, 78]
+    tree: [58, 92, 58]
+    safe_zone: [70, 130, 120]
+    blocked_road: [92, 80, 66]
+
+  # Fire is painted as a gradient from edge to core, scaled by intensity,
+  # so a dying fire and a raging one do not look identical.
+  fire_core: [255, 214, 96]
+  fire_edge: [186, 66, 26]
+
+  victim: [235, 96, 150]
+  debris: [74, 62, 52]
+  vehicle: [80, 168, 240]

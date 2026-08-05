@@ -1,7 +1,8 @@
 # Phase 2 — Simulation Engine, Occupancy Grid & Global Planning: design notes
 
-**Status:** Core complete (autonomous missions run end to end). Dynamic hazards are
-deferred — see "Still open" below.
+**Status:** Complete. This document covers the mission loop; the hazards and sensors
+that finished the phase are in
+[phase2-dynamic-world-and-sensors.md](phase2-dynamic-world-and-sensors.md).
 
 Records decisions made *during* implementation that PROJECT.md does not specify, per
 CLAUDE.md's documentation rules. The architectural split this phase rests on is
@@ -78,17 +79,23 @@ engine knowing either exists. A human drives through exactly the same action spa
 physics as the DQN, which makes manual mode a fair human baseline as well as a
 debugging tool.
 
-## Still open (next increments)
+## What came next
 
-Named explicitly so they are not mistaken for oversights:
+The three items this document originally listed as open were built in the second half
+of Phase 2 and are documented in
+[phase2-dynamic-world-and-sensors.md](phase2-dynamic-world-and-sensors.md):
 
-- **Dynamic hazards** — fire spread as a cellular automaton, and obstacles that appear
-  mid-mission. The replanning path they will exercise is built and tested
-  (`MissionController.invalidate_route`, exercised today by collisions); nothing yet
-  changes the world underneath the vehicle.
-- **CCTV rig** — the multi-camera `SensorRig` that renders sub-views of the city to
-  `ndarray` frames. This is the input every Phase 3+ model consumes, and it is the
-  natural next piece.
-- **Weather** — listed as optional in the specification, not started.
-- **Streamlit dashboard** — Phase 9. The HUD covers the same telemetry in-window for
-  now, and `MissionStats.as_display_rows` is the shared surface both will render.
+- **Dynamic hazards** — `FireSpreadProcess` and `DebrisCollapseProcess` behind the
+  `IWorldProcess` port. The replanning path this document anticipated is now pulled by
+  hazards as well as collisions.
+- **CCTV rig** — `sensors.rig.SensorRig`, which also produces the ground-truth labels
+  Phase 3 trains against.
+- **Weather** — still not started, still optional per the specification.
+
+Two decisions here were revised by that work, both noted in the newer document: fire
+now outranks the vehicle marker on the occupancy grid (so `fire_damage_per_tick` is
+actually reachable), and `AStarPlanner` no longer refuses to plan from an impassable
+start (so a vehicle engulfed by spreading fire is given a route out).
+
+**Streamlit dashboard** remains Phase 9. The HUD covers the same telemetry in-window
+for now, and `MissionStats.as_display_rows` is the shared surface both will render.

@@ -24,3 +24,39 @@ planner:
   # Small cost per direction change, so routes come out straighter and
   # produce fewer waypoints for the vehicle to chase.
   turn_penalty: 0.4
+
+# Processes that change the city on their own, with no help from the
+# vehicle. Set either `enabled: false` for a completely static city.
+hazards:
+  # Seeds both models. Fixed so a mission replays identically; change it to
+  # sample a different disaster from the same starting map.
+  seed: 20250805
+
+  # Fire only takes hold on flammable terrain (buildings, trees, rubble) —
+  # never on roads — so it threatens victims and raises the cost of nearby
+  # routes without ever severing the road network.
+  fire:
+    enabled: true
+    # Simulated seconds between automaton steps. Much slower than the tick
+    # rate on purpose: a fire that mutated ten times a second would make
+    # routing meaningless.
+    interval_seconds: 3.0
+    growth_per_step: 0.12
+    burnout_per_step: 0.18
+    # Per frontier tile per step, scaled by the parent fire's intensity.
+    ignition_chance: 0.16
+    max_radius: 3
+    max_active_fires: 12
+
+  # The dynamic obstacle: a weakened facade drops into the street beside
+  # it, on a tile the planner already believed was clear. This is what
+  # actually forces mid-mission replanning.
+  debris:
+    enabled: true
+    # Tuned against the shipped 30x20 map, where a full four-victim mission
+    # runs ~20 simulated seconds: often enough that a typical mission sees
+    # its route cut at least once, rare enough to stay a shock.
+    interval_seconds: 3.0
+    collapse_chance: 0.5
+    # Per-mission budget, so the city always stays navigable.
+    max_collapses: 6

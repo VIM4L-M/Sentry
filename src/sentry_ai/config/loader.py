@@ -18,9 +18,16 @@ from sentry_ai.common.types import PathLike
 from sentry_ai.config.schema import (
     AppConfig,
     BatteryConfig,
+    CameraSpec,
+    DebrisCollapseConfig,
+    DegradationConfig,
+    FireSpreadConfig,
+    HazardConfig,
     MissionConfig,
+    OnboardCameraConfig,
     PlannerConfig,
     RenderConfig,
+    SensorConfig,
     SimulationConfig,
     VehicleConfig,
 )
@@ -117,6 +124,48 @@ class ConfigLoader:
             render=render,
             simulation_config_path=self._optional_path(data, "simulation_config"),
             vehicle_config_path=self._optional_path(data, "vehicle_config"),
+            sensor_config_path=self._optional_path(data, "sensor_config"),
+        )
+
+    def load_sensor_config(self, relative_path: PathLike) -> SensorConfig:
+        """Load the camera network from ``sensors.yaml``.
+
+        Only the ``cameras`` list is required — every other key falls back
+        to its dataclass default. The ``palette`` section of the same file
+        is read separately by
+        :meth:`~sentry_ai.sensors.palette.SensorPalette.from_config`, which
+        owns what the cameras look like.
+
+        Raises:
+            AssetNotFoundError: If the file does not exist.
+            ConfigurationError: If a value has the wrong type.
+            ConfigValidationError: If no cameras are defined or a camera's
+                geometry is invalid.
+        """
+        data = self.load_yaml(relative_path)
+        onboard_data = _require_mapping(data.get("onboard", {}), "sensors.onboard")
+        degradation_data = _require_mapping(data.get("degradation", {}), "sensors.degradation")
+
+        return SensorConfig(
+            tile_size_px=_as_int(data, "tile_size_px", SensorConfig.tile_size_px),
+            cameras=_camera_specs(data.get("cameras", [])),
+            onboard=OnboardCameraConfig(
+                camera_id=str(onboard_data.get("id", OnboardCameraConfig.camera_id)),
+                span_tiles=_as_int(onboard_data, "span_tiles", OnboardCameraConfig.span_tiles),
+                tile_size_px=_as_int(
+                    onboard_data, "tile_size_px", OnboardCameraConfig.tile_size_px
+                ),
+            ),
+            degradation=DegradationConfig(
+                smoke_density=_as_float(
+                    degradation_data, "smoke_density", DegradationConfig.smoke_density
+                ),
+                smoke_grey=_as_int(degradation_data, "smoke_grey", DegradationConfig.smoke_grey),
+                blur_radius=_as_int(
+                    degradation_data, "blur_radius", DegradationConfig.blur_radius
+                ),
+                noise_std=_as_float(degradation_data, "noise_std", DegradationConfig.noise_std),
+            ),
         )
 
     def load_simulation_config(self, relative_path: PathLike) -> SimulationConfig:
@@ -158,6 +207,7 @@ class ConfigLoader:
             tick_rate_hz=_as_float(data, "tick_rate_hz", SimulationConfig.tick_rate_hz),
             mission=mission,
             planner=planner,
+            hazards=_hazard_config(_require_mapping(data.get("hazards", {}), "simulation.hazards")),
         )
 
     def load_vehicle_config(self, relative_path: PathLike) -> VehicleConfig:
@@ -200,6 +250,73 @@ class ConfigLoader:
         """Resolve ``data[key]`` as a path, or ``None`` when the key is absent."""
         value = data.get(key)
         return self.resolve(value) if value is not None else None
+
+
+def _camera_specs(entries: Any) -> tuple[CameraSpec, ...]:
+    """Parse the ``cameras`` list of a sensors config file."""
+    if not isinstance(entries, list):
+        raise ConfigurationError(
+            f"config section 'sensors.cameras' must be a list, got {type(entries)}"
+        )
+    specs: list[CameraSpec] = []
+    for index, entry in enumerate(entries):
+        camera = _require_mapping(entry, f"sensors.cameras[{index}]")
+        origin = camera.get("origin", [0, 0])
+        size = camera.get("size", [1, 1])
+        try:
+            origin_x, origin_y = origin
+            width, height = size
+        except (TypeError, ValueError) as exc:
+            raise ConfigurationError(
+                f"sensors.cameras[{index}] needs 2-element 'origin' and 'size' lists"
+            ) from exc
+        specs.append(
+            CameraSpec(
+                camera_id=str(camera.get("id", f"cctv_{index}")),
+                origin_x=int(origin_x),
+                origin_y=int(origin_y),
+                width_tiles=int(width),
+                height_tiles=int(height),
+            )
+        )
+    return tuple(specs)
+
+
+def _hazard_config(data: dict[str, Any]) -> HazardConfig:
+    """Build the hazard config from the ``hazards`` section of ``simulation.yaml``."""
+    fire_data = _require_mapping(data.get("fire", {}), "simulation.hazards.fire")
+    debris_data = _require_mapping(data.get("debris", {}), "simulation.hazards.debris")
+
+    fire = FireSpreadConfig(
+        enabled=_as_bool(fire_data, "enabled", FireSpreadConfig.enabled),
+        interval_seconds=_as_float(
+            fire_data, "interval_seconds", FireSpreadConfig.interval_seconds
+        ),
+        growth_per_step=_as_float(fire_data, "growth_per_step", FireSpreadConfig.growth_per_step),
+        burnout_per_step=_as_float(
+            fire_data, "burnout_per_step", FireSpreadConfig.burnout_per_step
+        ),
+        ignition_chance=_as_float(fire_data, "ignition_chance", FireSpreadConfig.ignition_chance),
+        max_radius=_as_int(fire_data, "max_radius", FireSpreadConfig.max_radius),
+        max_active_fires=_as_int(
+            fire_data, "max_active_fires", FireSpreadConfig.max_active_fires
+        ),
+    )
+    debris = DebrisCollapseConfig(
+        enabled=_as_bool(debris_data, "enabled", DebrisCollapseConfig.enabled),
+        interval_seconds=_as_float(
+            debris_data, "interval_seconds", DebrisCollapseConfig.interval_seconds
+        ),
+        collapse_chance=_as_float(
+            debris_data, "collapse_chance", DebrisCollapseConfig.collapse_chance
+        ),
+        max_collapses=_as_int(debris_data, "max_collapses", DebrisCollapseConfig.max_collapses),
+    )
+    return HazardConfig(
+        seed=_as_int(data, "seed", HazardConfig.seed),
+        fire=fire,
+        debris=debris,
+    )
 
 
 def _require_mapping(value: Any, label: str) -> dict[str, Any]:

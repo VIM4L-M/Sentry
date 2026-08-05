@@ -182,8 +182,9 @@ sentry/
 ├── configs/                        # all tunables — nothing hardcoded in code
 │   ├── app.yaml                    # root config: composes the others
 │   ├── logging.yaml                # dictConfig-style logging setup
-│   ├── simulation.yaml             # tick rate, battery/timer rules (Phase 2+)
-│   ├── vehicle.yaml                # vehicle kinematics/limits (Phase 2+)
+│   ├── simulation.yaml             # tick rate, mission rules, planner, hazards
+│   ├── vehicle.yaml                # vehicle kinematics/limits
+│   ├── sensors.yaml                # camera layout, degradation, sensor palette
 │   ├── render.yaml                 # window size, palette, tile size
 │   ├── maps/
 │   │   └── city_default.yaml       # disaster city map definition
@@ -200,6 +201,7 @@ sentry/
 │       ├── common/                 # cross-cutting, framework-free
 │       │   ├── logging_config.py
 │       │   ├── exceptions.py
+│       │   ├── color.py            # RGB value object, shared by renderer + sensors
 │       │   └── types.py
 │       ├── config/                 # typed config schema + loader
 │       │   ├── schema.py
@@ -213,6 +215,7 @@ sentry/
 │       │   ├── perception.py       # IVisionDetector, IDenoiser
 │       │   ├── sequence.py         # IMotionPredictor
 │       │   ├── navigation.py       # IRoutePlanner, ILocalController
+│       │   ├── world.py            # IWorldProcess, WorldChange (hazards)
 │       │   └── decision.py         # IDecisionFusion
 │       ├── navigation/             # global routing adapters (classical, not learned)
 │       │   └── astar.py            # AStarPlanner
@@ -223,11 +226,19 @@ sentry/
 │       │   ├── keyboard.py         # KeyboardController (manual driving)
 │       │   ├── simulation_app.py   # live mission window
 │       │   └── app.py              # static preview window
-│       ├── simulation/             # Phase 2 — engine, mission, physics, sensors
+│       ├── simulation/             # Phase 2 — engine, mission, physics, hazards
 │       │   ├── engine.py
 │       │   ├── mission.py
+│       │   ├── hazards.py          # fire spread + debris collapse
 │       │   ├── vehicle_controller.py
 │       │   └── waypoint_follower.py
+│       ├── sensors/                # Phase 2 — synthetic cameras + ground truth
+│       │   ├── camera.py           # CameraView, OnboardCamera, projection
+│       │   ├── frame.py            # CameraFrame, YOLO label export
+│       │   ├── palette.py          # what the cameras see (NOT the operator theme)
+│       │   ├── rasterizer.py       # city -> RGB array + Detection labels
+│       │   ├── degradation.py      # smoke/blur/noise -> Unit IV training pairs
+│       │   └── rig.py              # SensorRig: CCTV network + onboard camera
 │       ├── perception/             # Phase 3/4 — YOLO + autoencoder adapters
 │       ├── sequence/                # Phase 5 — LSTM adapter
 │       ├── decision/                 # Phase 6/7 — DQN policy + MLP fusion adapters
@@ -237,6 +248,7 @@ sentry/
 ├── scripts/                        # composition roots / CLI entry points
 │   ├── run_preview.py              # Phase 1: render static city map
 │   ├── run_simulation.py           # Phase 2: run a live/headless rescue mission
+│   ├── capture_dataset.py          # Phase 2: write the synthetic perception dataset
 │   ├── train_yolo.py               # Phase 3
 │   ├── train_autoencoder.py        # Phase 4
 │   ├── train_lstm.py               # Phase 5
@@ -275,7 +287,8 @@ placeholder code" rule.
 | `domain/` | Entities (Vehicle, Victim, Fire, Obstacle, Building, SafeZone…), the `CityMap` aggregate, domain enums | Know about Pygame, PyTorch, files on disk |
 | `interfaces/` | Abstract contracts (ports) every AI adapter must satisfy | Contain any model logic |
 | `rendering/` | Drawing domain state to a Pygame surface, HUD | Mutate domain/simulation state |
-| `simulation/` (Ph.2) | Tick loop, mission state machine, vehicle physics, sensor frame capture | Know about specific model classes — only interfaces; import Pygame |
+| `simulation/` (Ph.2) | Tick loop, mission state machine, vehicle physics, hazard processes | Know about specific model classes — only interfaces; import Pygame |
+| `sensors/` (Ph.2) | Camera geometry, rasterizing the city to labelled RGB frames, frame degradation | Import Pygame or any model; decide anything about the mission |
 | `navigation/` (Ph.2) | `AStarPlanner` — global routing over the occupancy grid | Learn anything, or decide per-tick actions |
 | `perception/` (Ph.3/4) | `YoloDetector`, `ConvDenoisingAutoencoder` adapters implementing the perception ports | Drive the render loop or own domain entities |
 | `sequence/` (Ph.5) | `LstmMotionPredictor` adapter | — |
@@ -293,13 +306,19 @@ placeholder code" rule.
 CityMap + Vehicle state
         │
         ▼
-SensorRig.capture_frame() ──────────────► raw_frame: np.ndarray (H,W,3)
+SensorRig.capture_all() ────────────────► CameraFrame[] {pixels (H,W,3), annotations}
+        │                                  (FrameDegrader adds smoke/blur/noise)
+        ▼
+                                        raw_frame: np.ndarray (H,W,3)
         │
         ▼
 IDenoiser.denoise(raw_frame) ───────────► clean_frame
         │
         ▼
 IVisionDetector.detect(clean_frame) ────► Detection[] {label, bbox, confidence}
+        │
+        ▼
+CameraFrame.world_position_of(d) ───────► Position   [image space -> map space]
         │
         ▼
 IMotionPredictor.predict(state_history, Detection[]) ─► BehaviourSignal
@@ -333,10 +352,25 @@ IRoutePlanner.plan(grid, start, goal) ──► Route {waypoints, cost}   [A*, n
 MissionController.next_waypoint() ─────► fed into every LocalObservation
 ```
 
-**What exists today (Phase 2)** is that global loop plus the tick loop with a
-deterministic `WaypointFollower` standing in for `ILocalController`. Every perception
-and sequence stage above is still an unfulfilled interface — no frame flows through
-them yet.
+**Hazards run before the vehicle observes**, so it always reacts to the world as it is
+now rather than as it was:
+
+```
+IWorldProcess.advance(city_map, dt) ────► WorldChange {changed_tiles, description}
+        │
+        ▼
+MissionController.refresh_grid() ───────► belief map rebuilt immediately
+        │
+        ▼
+MissionController.invalidate_route_if_affected(changed_tiles) ──► replan if cut
+```
+
+**What exists today (Phase 2)** is that global loop, the tick loop with a
+deterministic `WaypointFollower` standing in for `ILocalController`, the hazard
+processes, and the sensor rig producing labelled frames. `IDenoiser`,
+`IVisionDetector`, `IMotionPredictor`, and `IDecisionFusion` are still unfulfilled
+interfaces — frames are captured and written to disk, but nothing consumes them in
+the live loop yet.
 
 ---
 
@@ -617,7 +651,7 @@ sequenceDiagram
 | Phase | Title | Weeks | Syllabus Unit(s) | Status |
 |---|---|---|---|---|
 | 1 | Foundation & Core Architecture | 1-2 | — (infra) | ✅ **Complete** |
-| 2 | Simulation Engine, Occupancy Grid & A* Routing | 3-4 | — (infra) | 🚧 Core complete |
+| 2 | Simulation Engine, Occupancy Grid & A* Routing | 3-4 | — (infra) | ✅ **Complete** |
 | 3 | Computer Vision — Detection | 5-6 | Unit II | ⏳ Not started |
 | 4 | Representation Learning — Denoising AE | 7 | Unit IV | ⏳ Not started |
 | 5 | Sequence Modeling — LSTM | 8 | Unit III | ⏳ Not started |
@@ -646,13 +680,14 @@ Deliverables:
 Explicitly **out of scope** for Phase 1: vehicle movement, battery/timer countdown,
 fire spread, sensors, HUD, any PyTorch/YOLO/RL code. These belong to Phases 2-7.
 
-### Phase 2 — Simulation Engine, Occupancy Grid & A* Routing 🚧
+### Phase 2 — Simulation Engine, Occupancy Grid & A* Routing ✅
 
 Architecture note: this phase split navigation into a global (A*) and a local (DQN)
-tier — see [ADR 0002](docs/adr/0002-two-tier-navigation-and-command-center.md) and
-[`docs/architecture/phase2-simulation.md`](docs/architecture/phase2-simulation.md).
+tier — see [ADR 0002](docs/adr/0002-two-tier-navigation-and-command-center.md),
+[`docs/architecture/phase2-simulation.md`](docs/architecture/phase2-simulation.md), and
+[`docs/architecture/phase2-dynamic-world-and-sensors.md`](docs/architecture/phase2-dynamic-world-and-sensors.md).
 
-Done:
+Mission loop:
 - Tick-based `SimulationEngine` (fixed timestep, decoupled from frame rate)
 - `OccupancyGrid` with the specification's 0-6 codes, built from the city
 - `AStarPlanner` — risk-aware global routing over that grid
@@ -664,23 +699,46 @@ Done:
 - Manual keyboard driving through the same action space and physics
 - `scripts/run_simulation.py`, windowed and `--headless`
 
-Remaining:
-- `SensorRig`: renders CCTV and onboard views to `ndarray` frames — the input every
-  AI phase from here on consumes
-- Fire/smoke spread (cellular automaton) and mid-mission dynamic obstacles
-- Weather (optional per the specification)
+Dynamic world:
+- `IWorldProcess` / `WorldChange` — the port for anything that changes the city
+  without the vehicle touching it
+- `FireSpreadProcess` — a seeded cellular automaton: fire grows, creeps through fuel,
+  and burns out. Restricted to flammable terrain, so it threatens victims and raises
+  route costs without ever severing the road network
+- `DebrisCollapseProcess` — the specification's dynamic obstacle, dropping debris into
+  streets beside standing buildings and forcing mid-mission replans
+- `MissionController.invalidate_route_if_affected` — the command center reacts only
+  when a change lands on the part of the route it has not driven yet
+
+Sensors (`sensors/`):
+- `CameraView` / `OnboardCamera` — camera footprints and the exact pixel↔tile
+  projection that turns a detection back into a map coordinate
+- `FrameRasterizer` — the city painted into RGB arrays *with ground-truth
+  `Detection` labels produced in the same pass*, so image and truth cannot diverge
+- `FrameDegrader` — smoke, blur, and sensor noise, producing the aligned
+  (corrupted, clean) pairs Unit IV's autoencoder trains on
+- `SensorRig` — the four-camera CCTV network plus the vehicle's onboard view
+- `scripts/capture_dataset.py` — writes images, YOLO labels, and clean pairs across a
+  whole mission
+
+Not built, and deliberately so: weather, which the specification lists as optional.
 
 ### Phase 3 — Computer Vision (Unit II)
 
-- Synthetic dataset generator: auto-labeled bounding boxes from ground-truth `CityMap`
-  entities rendered via `SensorRig`
+The dataset this phase needs already exists — `scripts/capture_dataset.py` emits
+images plus YOLO label files, with class ids fixed by `sensors.frame.YOLO_CLASSES`
+(`victim`, `fire`, `obstacle`).
+
 - YOLOv8n fine-tuning pipeline (`train_yolo.py`, `configs/training/yolo.yaml`)
 - `YoloDetector` adapter implementing `IVisionDetector`, wired into the pipeline
+- Detection → world projection via `CameraFrame.world_position_of`, merged across the
+  overlapping CCTV footprints into the occupancy grid
 
 ### Phase 4 — Representation Learning (Unit IV)
 
-- Noise-injection augmentation (motion blur, smoke occlusion, sensor grain) applied to
-  synthetic frames
+Training pairs already exist: `FrameDegrader.degrade_pair` returns a corrupted frame
+and its pixel-aligned clean original.
+
 - Convolutional Denoising Autoencoder (PyTorch) trained to reconstruct clean frames
 - `ConvDenoisingAutoencoder` adapter implementing `IDenoiser`, inserted upstream of the detector
 
@@ -734,7 +792,7 @@ Remaining:
 - [x] **M2a — Living City**: vehicle moves under manual *and* autonomous control,
       battery/timer function, HUD renders live stats, A* routes across the city, a
       complete mission runs unattended. *(Phase 2)*
-- [ ] **M2b — Changing City**: fire spreads, obstacles appear mid-mission, and the
+- [x] **M2b — Changing City**: fire spreads, obstacles appear mid-mission, and the
       command center replans around them; `SensorRig` emits camera frames. *(Phase 2)*
 - [ ] **M3 — Sees**: YOLOv8n detects victims/fire/obstacles in simulated camera frames
       above target mAP. *(Phase 3)*
@@ -818,6 +876,7 @@ logging_config: "configs/logging.yaml"
 map_config: "configs/maps/city_default.yaml"
 simulation_config: "configs/simulation.yaml"   # optional: preview-only configs omit it
 vehicle_config: "configs/vehicle.yaml"         # optional: preview-only configs omit it
+sensor_config: "configs/sensors.yaml"          # optional: only frame-capturing scripts read it
 render:
   window_title: "SENTRY AI — Disaster City Preview"
   tile_size_px: 28
@@ -840,6 +899,21 @@ planner:
   fire_risk_penalty: 6.0      # extra A* cost near known fire; 0.0 = pure shortest path
   fire_risk_radius: 2
   turn_penalty: 0.4
+hazards:
+  seed: 20250805              # fixed, so a mission replays identically
+  fire:                       # cellular automaton; flammable terrain only
+    enabled: true
+    interval_seconds: 3.0     # much slower than the tick rate, on purpose
+    growth_per_step: 0.12
+    burnout_per_step: 0.18
+    ignition_chance: 0.16
+    max_radius: 3
+    max_active_fires: 12
+  debris:                     # the spec's dynamic obstacle
+    enabled: true
+    interval_seconds: 3.0
+    collapse_chance: 0.5
+    max_collapses: 6
 
 # vehicle.yaml
 capacity: 2
@@ -851,6 +925,35 @@ battery:
 collision_damage_percent: 5.0
 fire_damage_per_tick: 2.0
 sensor_range_tiles: 5.0
+```
+
+`configs/sensors.yaml` (Phase 2). Two readers share this file, each owning one
+section: `ConfigLoader.load_sensor_config()` takes the geometry and degradation,
+`SensorPalette.from_config()` takes the palette — the same split `app.yaml` has with
+`render.yaml`:
+
+```yaml
+tile_size_px: 16              # 16 px x 16x10-tile cameras = 256x160, both /32 for YOLO
+cameras:                      # four fixed CCTV views, overlapping by two columns
+  - {id: "cctv_nw", origin: [0, 0],  size: [16, 10]}
+  - {id: "cctv_ne", origin: [14, 0], size: [16, 10]}
+  - {id: "cctv_sw", origin: [0, 10],  size: [16, 10]}
+  - {id: "cctv_se", origin: [14, 10], size: [16, 10]}
+onboard:                      # square, odd-sized, follows the vehicle
+  id: "onboard"
+  span_tiles: 9
+  tile_size_px: 16
+degradation:                  # produces the (corrupted, clean) pairs Unit IV needs
+  smoke_density: 0.45
+  smoke_grey: 150
+  blur_radius: 1
+  noise_std: 8.0
+palette:                      # what the DETECTOR sees — deliberately not render.yaml
+  texture_jitter: 12
+  terrain: {road: [70, 70, 74], building: [120, 116, 108], ...}
+  fire_core: [255, 214, 96]
+  fire_edge: [186, 66, 26]
+  victim: [235, 96, 150]
 ```
 
 `configs/maps/city_default.yaml` (excerpt — full file has the real 30x20 city):

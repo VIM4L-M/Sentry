@@ -25,6 +25,7 @@ models/**
 !models/.gitkeep
 data/raw/**
 data/processed/**
+data/synthetic/**
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 

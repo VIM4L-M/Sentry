@@ -19,6 +19,7 @@ from sentry_ai.domain.occupancy import OccupancyGrid
 from sentry_ai.interfaces.navigation import LocalAction, LocalDecision, LocalObservation
 from sentry_ai.navigation.astar import AStarPlanner
 from sentry_ai.simulation.engine import SimulationEngine
+from sentry_ai.simulation.hazards import build_world_processes
 from sentry_ai.simulation.mission import MissionController, MissionPhase
 from sentry_ai.simulation.waypoint_follower import WaypointFollower
 
@@ -29,8 +30,15 @@ def _build(
     project_root: Path,
     simulation_config: SimulationConfig | None = None,
     vehicle_config: VehicleConfig | None = None,
+    *,
+    with_hazards: bool = False,
 ) -> tuple[SimulationEngine, CityMap]:
-    """Compose an engine over the repo's real configs, as the CLI script does."""
+    """Compose an engine over the repo's real configs, as the CLI script does.
+
+    Hazards are opt-in so the bulk of these tests pin down the mission loop
+    against a static city, and the dynamic-world tests are explicit about
+    running a moving target.
+    """
     loader = ConfigLoader(project_root=project_root)
     app_config = loader.load_app_config("configs/app.yaml")
     assert app_config.simulation_config_path is not None
@@ -45,7 +53,10 @@ def _build(
         planner=AStarPlanner(sim.planner),
         config=sim.mission,
     )
-    engine = SimulationEngine(city_map, mission, WaypointFollower(), sim, vehicle)
+    processes = build_world_processes(sim.hazards) if with_hazards else []
+    engine = SimulationEngine(
+        city_map, mission, WaypointFollower(), sim, vehicle, world_processes=processes
+    )
     return engine, city_map
 
 
@@ -149,3 +160,57 @@ class TestCollisionHandling:
 
         assert stats.collisions > 0
         assert city_map.vehicle.health_percent < 100.0
+
+
+class TestMissionUnderHazards:
+    """The same mission, but with fire spreading and buildings coming down."""
+
+    def test_the_mission_still_completes_when_the_city_moves(
+        self, project_root: Path
+    ) -> None:
+        engine, city_map = _build(project_root, with_hazards=True)
+        stats = engine.run(max_ticks=_MAX_TICKS)
+
+        assert engine.mission.phase is MissionPhase.COMPLETED
+        assert stats.victims_rescued > 0
+        assert stats.victims_rescued + stats.victims_unreachable == len(city_map.victims)
+
+    def test_hazards_actually_fire_during_a_mission(self, project_root: Path) -> None:
+        engine, _ = _build(project_root, with_hazards=True)
+        stats = engine.run(max_ticks=_MAX_TICKS)
+        assert stats.hazard_events > 0
+
+    def test_a_collapse_lands_somewhere_the_map_did_not_start_blocked(
+        self, project_root: Path
+    ) -> None:
+        engine, city_map = _build(project_root, with_hazards=True)
+        before = len(city_map.obstacles)
+        engine.run(max_ticks=_MAX_TICKS)
+        assert len(city_map.obstacles) > before
+
+    def test_fire_spreads_beyond_the_two_it_started_with(self, project_root: Path) -> None:
+        engine, city_map = _build(project_root, with_hazards=True)
+        engine.run(max_ticks=_MAX_TICKS)
+        assert any(fire.fire_id.startswith("fire_spread_") for fire in city_map.fires)
+
+    def test_a_hazardous_mission_is_still_deterministic(self, project_root: Path) -> None:
+        """The seeded RNG is what makes Phase 6 training runs comparable."""
+        first = _build(project_root, with_hazards=True)[0].run(max_ticks=_MAX_TICKS)
+        second = _build(project_root, with_hazards=True)[0].run(max_ticks=_MAX_TICKS)
+        assert (first.ticks, first.victims_rescued, first.hazard_events) == (
+            second.ticks,
+            second.victims_rescued,
+            second.hazard_events,
+        )
+
+    def test_the_tick_result_carries_the_world_change(self, project_root: Path) -> None:
+        engine, _ = _build(project_root, with_hazards=True)
+        changes = []
+        for _ in range(_MAX_TICKS):
+            result = engine.tick()
+            if result is None:
+                break
+            if not result.world_change.is_empty:
+                changes.append(result.world_change)
+        assert changes
+        assert all(change.description for change in changes)

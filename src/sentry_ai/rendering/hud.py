@@ -31,6 +31,12 @@ class HudLayout:
         row_height_px: Vertical pitch between text rows.
         gauge_width_px: Width of the battery and health bars.
         font_size_px: Point size for all HUD text.
+        stats_left_px: Where the stats block starts, clear of the status text.
+        stats_column_width_px: Horizontal pitch between stats columns.
+        stats_rows_per_column: How many stats rows stack before wrapping into
+            the next column. Set so the block stays clear of the gauges as
+            :meth:`~sentry_ai.simulation.mission.MissionStats.as_display_rows`
+            grows — adding a metric should not silently overlap them.
     """
 
     height_px: int = 116
@@ -38,6 +44,9 @@ class HudLayout:
     row_height_px: int = 18
     gauge_width_px: int = 180
     font_size_px: int = 15
+    stats_left_px: int = 220
+    stats_column_width_px: int = 190
+    stats_rows_per_column: int = 4
 
 
 class HudRenderer:
@@ -102,12 +111,13 @@ class HudRenderer:
         )
 
     def _draw_stats(self, surface: pygame.Surface, mission: MissionController, top: int) -> None:
-        """The mission's running counters, in two columns."""
+        """The mission's running counters, wrapped into columns."""
         layout = self._layout
-        column_x = layout.padding_px + 220
+        column_x = layout.padding_px + layout.stats_left_px
+        per_column = layout.stats_rows_per_column
         for index, (label, value) in enumerate(mission.stats.as_display_rows()):
-            x = column_x + (index // 3) * 190
-            y = top + (index % 3) * layout.row_height_px
+            x = column_x + (index // per_column) * layout.stats_column_width_px
+            y = top + (index % per_column) * layout.row_height_px
             self._text(surface, f"{label:<12}{value}", x, y)
 
     def _draw_gauges(self, surface: pygame.Surface, vehicle: Vehicle, top: int) -> None:

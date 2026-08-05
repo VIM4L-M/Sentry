@@ -57,11 +57,18 @@ class AStarPlanner(IRoutePlanner):
     def plan(self, grid: OccupancyGridLike, start: Position, goal: Position) -> Route:
         """Return the cheapest route from ``start`` to ``goal``.
 
-        Returns :meth:`Route.unreachable` when either endpoint is
-        impassable or no path exists — an ordinary mission state, not an
-        error (see :class:`IRoutePlanner`).
+        Returns :meth:`Route.unreachable` when the goal is impassable or no
+        path exists — an ordinary mission state, not an error (see
+        :class:`IRoutePlanner`).
+
+        An impassable *start* is not an error either, and deliberately does
+        not short-circuit: once hazards can change the world underneath a
+        stationary vehicle, fire can engulf the tile it is sitting on, and
+        that is precisely the moment it most needs a route out. The search
+        still refuses to *enter* impassable tiles, so any route found leaves
+        the danger and never re-enters it.
         """
-        if not grid.is_traversable(start) or not grid.is_traversable(goal):
+        if not grid.is_traversable(goal):
             return Route.unreachable()
         if start == goal:
             return Route(waypoints=(start,), cost=0.0)

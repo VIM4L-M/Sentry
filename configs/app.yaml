@@ -10,6 +10,9 @@ map_config: "configs/maps/city_default.yaml"
 simulation_config: "configs/simulation.yaml"
 vehicle_config: "configs/vehicle.yaml"
 
+# Camera network. Optional: only scripts that capture frames read it.
+sensor_config: "configs/sensors.yaml"
+
 render:
   window_title: "SENTRY AI — Disaster City Preview"
   tile_size_px: 28

@@ -14,7 +14,8 @@ changes a composition root, not this file.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 
 from sentry_ai.common.logging_config import get_logger
 from sentry_ai.config.schema import SimulationConfig, VehicleConfig
@@ -22,6 +23,7 @@ from sentry_ai.domain.entities import Position, Vehicle
 from sentry_ai.domain.map import CityMap
 from sentry_ai.domain.occupancy import OccupancyCode
 from sentry_ai.interfaces.navigation import ILocalController, LocalDecision, LocalObservation
+from sentry_ai.interfaces.world import IWorldProcess, WorldChange
 from sentry_ai.simulation.mission import MissionController, MissionPhase, MissionStats
 from sentry_ai.simulation.vehicle_controller import MoveOutcome, VehicleController
 
@@ -37,12 +39,16 @@ class TickResult:
         decision: What the local controller chose, with its Q-values.
         outcome: What physically happened when that choice was applied.
         phase: The mission phase after the step was adjudicated.
+        world_change: What hazards altered before the vehicle acted. Empty
+            on the great majority of ticks — hazards run on their own,
+            slower cadence.
     """
 
     tick: int
     decision: LocalDecision
     outcome: MoveOutcome
     phase: MissionPhase
+    world_change: WorldChange = field(default_factory=WorldChange.none)
 
 
 class SimulationEngine:
@@ -55,6 +61,7 @@ class SimulationEngine:
         controller: ILocalController,
         simulation_config: SimulationConfig,
         vehicle_config: VehicleConfig,
+        world_processes: Sequence[IWorldProcess] = (),
     ) -> None:
         """Wire the engine to a world, a mission, and a driver.
 
@@ -65,6 +72,9 @@ class SimulationEngine:
                 waypoint follower, a keyboard adapter, or a trained DQN.
             simulation_config: Tick rate and mission rules.
             vehicle_config: Physics applied to the vehicle.
+            world_processes: Hazards that evolve the city on their own,
+                driven in the order given. Defaults to none, which is a
+                completely static city.
         """
         self._city_map = city_map
         self._mission = mission
@@ -72,6 +82,7 @@ class SimulationEngine:
         self._simulation_config = simulation_config
         self._vehicle_config = vehicle_config
         self._vehicle_controller = VehicleController(vehicle_config)
+        self._world_processes = tuple(world_processes)
         self._tick_index = 0
 
         city_map.vehicle.battery_percent = vehicle_config.battery.initial_percent
@@ -108,6 +119,7 @@ class SimulationEngine:
 
         self._tick_index += 1
         vehicle = self._city_map.vehicle
+        world_change = self._advance_world(vehicle)
         decision = self._controller.decide(self._observe(vehicle))
         outcome = self._vehicle_controller.apply(vehicle, decision.action, self._mission.grid)
 
@@ -122,7 +134,32 @@ class SimulationEngine:
             decision=decision,
             outcome=outcome,
             phase=self._mission.phase,
+            world_change=world_change,
         )
+
+    def _advance_world(self, vehicle: Vehicle) -> WorldChange:
+        """Let hazards evolve the city, then resync the command center's map.
+
+        Runs before the vehicle observes, so it always reacts to the world
+        as it is now. The belief map is rebuilt immediately rather than at
+        the end of the tick: planning a route across a street that a
+        collapse has already blocked is exactly the mistake this ordering
+        prevents.
+        """
+        change = WorldChange.none()
+        for process in self._world_processes:
+            change = change.merged_with(
+                process.advance(self._city_map, self._simulation_config.seconds_per_tick)
+            )
+        if change.is_empty:
+            return change
+
+        self._mission.stats.hazard_events += 1
+        self._mission.refresh_grid(vehicle)
+        if self._simulation_config.mission.replan_on_blocked_route:
+            self._mission.invalidate_route_if_affected(change.changed_tiles)
+        logger.info("Tick %d — %s", self._tick_index, change.description)
+        return change
 
     def run(self, max_ticks: int) -> MissionStats:
         """Tick until the mission ends or ``max_ticks`` is reached.

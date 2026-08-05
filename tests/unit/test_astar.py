@@ -61,9 +61,27 @@ class TestUnreachable:
         planner = AStarPlanner(_NO_PENALTIES)
         assert planner.plan(_grid([".#."]), Position(0, 0), Position(1, 0)).is_empty
 
-    def test_impassable_start_returns_an_empty_route(self) -> None:
+
+class TestEscapingAnImpassableStart:
+    """A vehicle engulfed by spreading fire still has to be given a way out."""
+
+    def test_impassable_start_still_yields_a_route_out(self) -> None:
         planner = AStarPlanner(_NO_PENALTIES)
-        assert planner.plan(_grid([".#."]), Position(1, 0), Position(2, 0)).is_empty
+        route = planner.plan(_grid(["F.."]), Position(0, 0), Position(2, 0))
+        assert [p.as_tuple() for p in route] == [(0, 0), (1, 0), (2, 0)]
+
+    def test_the_route_out_never_re_enters_danger(self) -> None:
+        planner = AStarPlanner(_NO_PENALTIES)
+        route = planner.plan(_grid(["FF.", "...", "..."]), Position(0, 0), Position(2, 0))
+        assert not route.is_empty
+        # Only the start may be a fire tile; the planner must route around
+        # (1, 0) rather than driving straight through it.
+        assert (1, 0) not in [p.as_tuple() for p in route]
+
+    def test_a_vehicle_walled_in_completely_has_no_route(self) -> None:
+        planner = AStarPlanner(_NO_PENALTIES)
+        rows = ["#####", "#F#.#", "#####"]
+        assert planner.plan(_grid(rows), Position(1, 1), Position(3, 1)).is_empty
 
 
 class TestCostModel:
