@@ -14,9 +14,10 @@ The city used to be a still photograph the vehicle drove across. Now it burns an
 collapses while the mission runs, and four cameras plus one onboard view report what
 it looks like — with labels.
 
-`python scripts/run_simulation.py --headless` on the shipped map: 3 of 4 victims
-rescued, ~5 fires ignited by spread, ~5 collapses, at least one route cut and
-replanned, zero collisions. `python scripts/capture_dataset.py --output data/synthetic`
+`python scripts/run_simulation.py --headless` on the shipped map: all 4 victims
+rescued with none lost or stranded, fires ignited by spread, several collapses, and
+zero collisions — with the victim trapped beside a fire arriving in visibly worse
+shape than the one stranded in the open. `python scripts/capture_dataset.py --output data/synthetic`
 writes the perception dataset from that same mission.
 
 ## Decisions
@@ -25,8 +26,9 @@ writes the perception dataset from that same mission.
 
 Both hazards could have blocked roads. Only one does, and that is deliberate.
 
-`FireSpreadProcess` ignites only flammable terrain — buildings, trees, rubble — never
-roads or open ground. Fire therefore spreads *through the blocks* where victims are
+`FireSpreadProcess` ignites only flammable terrain — standing buildings and trees,
+never roads, open ground, or rubble (see "Rubble does not burn" below). Fire spreads
+*through the blocks* where victims are
 trapped, raising the planner's risk cost near them and eventually reaching them, but
 it can never sever the road network. `DebrisCollapseProcess` does the opposite: it
 drops rubble into clear streets beside standing buildings, which is precisely the
