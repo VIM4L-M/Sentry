@@ -25,6 +25,8 @@ from sentry_ai.rendering.simulation_app import (
     build_mode_switch,
 )
 from sentry_ai.rendering.theme import Theme
+from sentry_ai.sensors.palette import SensorPalette
+from sentry_ai.sensors.rig import SensorRig
 from sentry_ai.simulation.engine import SimulationEngine
 from sentry_ai.simulation.mission import MissionController
 from sentry_ai.simulation.waypoint_follower import WaypointFollower
@@ -57,7 +59,72 @@ def app(project_root: Path) -> SimulationApp:
         render_config=app_config.render,
         theme=Theme.from_config(loader, app_config.render.palette_config_path),
         mode_switch=mode_switch,
+        sensor_rig=SensorRig.from_config(
+            loader.load_sensor_config("configs/sensors.yaml"),
+            SensorPalette.from_config(loader, "configs/sensors.yaml"),
+        ),
     )
+
+
+@pytest.fixture
+def app_without_cameras(project_root: Path) -> SimulationApp:
+    """The same window with no rig, which must still open and run."""
+    loader = ConfigLoader(project_root=project_root)
+    app_config = loader.load_app_config("configs/app.yaml")
+    assert app_config.simulation_config_path is not None
+    assert app_config.vehicle_config_path is not None
+
+    simulation_config = loader.load_simulation_config(app_config.simulation_config_path)
+    vehicle_config = loader.load_vehicle_config(app_config.vehicle_config_path)
+    city_map = CityMap.from_config(loader.load_yaml(app_config.map_config_path))
+    mission = MissionController(
+        city_map=city_map,
+        grid=OccupancyGrid.from_city_map(city_map),
+        planner=AStarPlanner(simulation_config.planner),
+        config=simulation_config.mission,
+    )
+    engine = SimulationEngine(
+        city_map, mission, WaypointFollower(), simulation_config, vehicle_config
+    )
+    return SimulationApp(
+        city_map=city_map,
+        engine=engine,
+        render_config=app_config.render,
+        theme=Theme.from_config(loader, app_config.render.palette_config_path),
+    )
+
+
+def _press(key: int) -> None:
+    """Queue one key press followed by a quit, so ``run`` returns."""
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=key))
+    pygame.event.post(pygame.event.Event(pygame.QUIT))
+
+
+class TestViewToggles:
+    def test_g_switches_to_the_occupancy_grid_view(self, app: SimulationApp) -> None:
+        pygame.init()
+        _press(pygame.K_g)
+        app.run()
+        assert app._show_grid is True  # noqa: SLF001 — the toggle is the behaviour
+
+    def test_c_hides_the_camera_panel(self, app: SimulationApp) -> None:
+        pygame.init()
+        _press(pygame.K_c)
+        app.run()
+        assert app._show_cameras is False  # noqa: SLF001
+
+    def test_c_does_nothing_without_a_rig(self, app_without_cameras: SimulationApp) -> None:
+        pygame.init()
+        _press(pygame.K_c)
+        app_without_cameras.run()
+        assert app_without_cameras._show_cameras is False  # noqa: SLF001
+
+    def test_a_window_without_a_rig_still_runs(
+        self, app_without_cameras: SimulationApp
+    ) -> None:
+        pygame.init()
+        pygame.event.post(pygame.event.Event(pygame.QUIT))
+        app_without_cameras.run()
 
 
 def test_window_runs_and_exits_on_quit(app: SimulationApp) -> None:

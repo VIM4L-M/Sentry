@@ -13,12 +13,15 @@ terrain:
   safe_zone: [40, 160, 96]
   blocked_road: [150, 62, 42]
 
+# Entity colours are kept close to configs/sensors.yaml's palette on purpose.
+# The map and the camera panel are on screen at the same time, so a victim
+# that is pink in one view and yellow in the other reads as two things.
 entities:
-  vehicle: [46, 134, 222]
-  victim: [235, 203, 42]
-  fire: [224, 62, 32]
+  vehicle: [80, 168, 240]
+  victim: [235, 96, 150]
+  fire: [224, 78, 30]
   smoke: [150, 150, 150]
-  obstacle: [184, 92, 42]
+  obstacle: [126, 104, 84]
 
 # Mission HUD (Phase 2). Kept separate from world colors so the city can be
 # re-skinned without touching instrument legibility.

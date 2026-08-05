@@ -28,6 +28,8 @@ from sentry_ai.domain.occupancy import OccupancyGrid
 from sentry_ai.navigation.astar import AStarPlanner
 from sentry_ai.rendering.simulation_app import SimulationApp, build_mode_switch
 from sentry_ai.rendering.theme import Theme
+from sentry_ai.sensors.palette import SensorPalette
+from sentry_ai.sensors.rig import SensorRig
 from sentry_ai.simulation.engine import SimulationEngine
 from sentry_ai.simulation.hazards import build_world_processes
 from sentry_ai.simulation.mission import MissionController, MissionStats
@@ -80,6 +82,7 @@ def main() -> int:
             render_config=app_config.render,
             theme=theme,
             mode_switch=mode_switch,
+            sensor_rig=_build_sensor_rig(loader, app_config),
         ).run()
 
     _report(engine.stats, mission)
@@ -116,6 +119,21 @@ def _load_mission_configs(loader: ConfigLoader, app_config: AppConfig) -> tuple:
     return (
         loader.load_simulation_config(app_config.simulation_config_path),
         loader.load_vehicle_config(app_config.vehicle_config_path),
+    )
+
+
+def _build_sensor_rig(loader: ConfigLoader, app_config: AppConfig) -> SensorRig | None:
+    """The camera network for the window, or ``None`` if none is configured.
+
+    Optional rather than required: a mission is perfectly watchable without
+    the camera strip, and an app config that omits ``sensor_config`` should
+    still open a window rather than fail.
+    """
+    path = app_config.sensor_config_path
+    if path is None:
+        return None
+    return SensorRig.from_config(
+        loader.load_sensor_config(path), SensorPalette.from_config(loader, path)
     )
 
 

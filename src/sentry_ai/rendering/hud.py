@@ -18,7 +18,19 @@ import pygame
 
 from sentry_ai.domain.entities import Vehicle
 from sentry_ai.rendering.theme import Color, Theme
+from sentry_ai.simulation.events import EventKind
 from sentry_ai.simulation.mission import MissionController, MissionPhase
+
+#: Colour role per event kind. Only three roles exist in the HUD palette, so
+#: events map onto "routine", "good news", and "bad news" rather than
+#: getting a colour each.
+_EVENT_TONE: dict[EventKind, str] = {
+    EventKind.MISSION: "accent",
+    EventKind.ROUTE: "text",
+    EventKind.RESCUE: "accent",
+    EventKind.HAZARD: "warning",
+    EventKind.FAILURE: "warning",
+}
 
 
 @dataclass(frozen=True)
@@ -33,6 +45,8 @@ class HudLayout:
         font_size_px: Point size for all HUD text.
         stats_left_px: Where the stats block starts, clear of the status text.
         stats_column_width_px: Horizontal pitch between stats columns.
+        events_left_px: Where the event log starts, clear of the stats.
+        events_rows: How many recent events the log shows.
         stats_rows_per_column: How many stats rows stack before wrapping into
             the next column. Set so the block stays clear of the gauges as
             :meth:`~sentry_ai.simulation.mission.MissionStats.as_display_rows`
@@ -47,6 +61,8 @@ class HudLayout:
     stats_left_px: int = 220
     stats_column_width_px: int = 190
     stats_rows_per_column: int = 4
+    events_left_px: int = 610
+    events_rows: int = 5
 
 
 class HudRenderer:
@@ -86,6 +102,7 @@ class HudRenderer:
 
         self._draw_status(surface, mission, top + layout.padding_px)
         self._draw_stats(surface, mission, top + layout.padding_px)
+        self._draw_events(surface, mission, top + layout.padding_px)
         self._draw_gauges(surface, vehicle, top + layout.padding_px)
 
     def _draw_status(self, surface: pygame.Surface, mission: MissionController, top: int) -> None:
@@ -119,6 +136,49 @@ class HudRenderer:
             x = column_x + (index // per_column) * layout.stats_column_width_px
             y = top + (index % per_column) * layout.row_height_px
             self._text(surface, f"{label:<12}{value}", x, y)
+
+    def _draw_events(self, surface: pygame.Surface, mission: MissionController, top: int) -> None:
+        """The most recent mission events, oldest at the top.
+
+        This is the panel that lets someone watch a demo and understand
+        *why* the vehicle did what it did — "world changed under the route"
+        followed by "routing to the hospital" tells the whole replanning
+        story without a word of narration.
+        """
+        layout = self._layout
+        x = layout.padding_px + layout.events_left_px
+        available = self._events_width(surface)
+        for index, event in enumerate(mission.events.recent(layout.events_rows)):
+            timestamp, message = event.as_row()
+            color = getattr(self._theme.hud, _EVENT_TONE[event.kind])
+            self._text(
+                surface,
+                self._ellipsize(f"{timestamp} {message}", available),
+                x,
+                top + index * layout.row_height_px,
+                color,
+            )
+
+    def _events_width(self, surface: pygame.Surface) -> int:
+        """Horizontal room the event log has before the gauges begin."""
+        layout = self._layout
+        gauges_left = surface.get_width() - layout.gauge_width_px - layout.padding_px
+        return gauges_left - (layout.padding_px + layout.events_left_px) - layout.padding_px
+
+    def _ellipsize(self, text: str, max_width_px: int) -> str:
+        """Trim ``text`` with a trailing ellipsis until it fits.
+
+        Event messages are written for humans and vary in length, so the
+        panel has to cope rather than assume. Measured with the real font
+        rather than an assumed character width — the HUD font is monospace
+        today, but nothing enforces that.
+        """
+        if max_width_px <= 0 or self._font.size(text)[0] <= max_width_px:
+            return text
+        trimmed = text
+        while trimmed and self._font.size(f"{trimmed}…")[0] > max_width_px:
+            trimmed = trimmed[:-1]
+        return f"{trimmed}…"
 
     def _draw_gauges(self, surface: pygame.Surface, vehicle: Vehicle, top: int) -> None:
         """Battery and health bars, right-aligned."""

@@ -23,12 +23,16 @@ from sentry_ai.config.schema import MissionConfig
 from sentry_ai.domain.map import CityMap
 from sentry_ai.domain.occupancy import OccupancyGrid
 from sentry_ai.navigation.astar import AStarPlanner
+from sentry_ai.rendering.camera_panel import CameraPanelLayout
 from sentry_ai.rendering.hud import HudLayout, HudRenderer
 from sentry_ai.rendering.theme import Theme
 from sentry_ai.simulation.mission import MissionController, MissionStats
 
-#: The shipped city at the shipped tile size — the window the HUD must fit.
-_WINDOW_WIDTH_PX = 30 * 28
+#: The shipped city at the shipped tile size, plus the camera strip — the
+#: window the HUD actually has to fit inside. Keep this in step with
+#: SimulationApp._create_surface; the whole point of these tests is that the
+#: HUD stays inside the window it is given.
+_WINDOW_WIDTH_PX = 30 * 28 + CameraPanelLayout().width_px
 
 
 @pytest.fixture
@@ -80,6 +84,40 @@ class TestStatsFitBesideTheGauges:
         layout = HudLayout()
         # Health sits two rows below battery, and its bar is 8px tall.
         used = layout.padding_px + layout.row_height_px * 3 + 8
+        assert used + layout.padding_px <= layout.height_px
+
+
+class TestEventsFitTheirColumn:
+    def test_the_event_log_starts_clear_of_the_stats(self, renderer: HudRenderer) -> None:
+        layout = HudLayout()
+        assert _stats_right_edge(renderer, layout) <= layout.padding_px + layout.events_left_px
+
+    def test_the_event_log_ends_before_the_gauges(self, renderer: HudRenderer) -> None:
+        layout = HudLayout()
+        events_left = layout.padding_px + layout.events_left_px
+        gauges_left = _WINDOW_WIDTH_PX - layout.gauge_width_px - layout.padding_px
+        assert events_left < gauges_left
+
+    def test_a_long_message_is_ellipsized_rather_than_overrunning(
+        self, renderer: HudRenderer
+    ) -> None:
+        """Event text is written for humans and varies; the panel must cope."""
+        surface = pygame.Surface((_WINDOW_WIDTH_PX, 400))
+        available = renderer._events_width(surface)  # noqa: SLF001 — real geometry
+        long_line = " 12.3s " + "a very long hazard description " * 4
+
+        fitted = renderer._ellipsize(long_line, available)  # noqa: SLF001
+        assert fitted.endswith("…")
+        assert _rendered_width(renderer, fitted) <= available
+
+    def test_a_short_message_is_left_alone(self, renderer: HudRenderer) -> None:
+        surface = pygame.Surface((_WINDOW_WIDTH_PX, 400))
+        available = renderer._events_width(surface)  # noqa: SLF001
+        assert renderer._ellipsize("12.3s ok", available) == "12.3s ok"  # noqa: SLF001
+
+    def test_every_event_row_fits_inside_the_panel(self, renderer: HudRenderer) -> None:
+        layout = HudLayout()
+        used = layout.padding_px + layout.events_rows * layout.row_height_px
         assert used + layout.padding_px <= layout.height_px
 
 

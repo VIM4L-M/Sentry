@@ -24,6 +24,7 @@ from sentry_ai.domain.map import CityMap
 from sentry_ai.domain.occupancy import OccupancyCode
 from sentry_ai.interfaces.navigation import ILocalController, LocalDecision, LocalObservation
 from sentry_ai.interfaces.world import IWorldProcess, WorldChange
+from sentry_ai.simulation.events import EventKind
 from sentry_ai.simulation.mission import MissionController, MissionPhase, MissionStats
 from sentry_ai.simulation.vehicle_controller import MoveOutcome, VehicleController
 
@@ -156,9 +157,9 @@ class SimulationEngine:
 
         self._mission.stats.hazard_events += 1
         self._mission.refresh_grid(vehicle)
+        self._mission.record(EventKind.HAZARD, change.description)
         if self._simulation_config.mission.replan_on_blocked_route:
             self._mission.invalidate_route_if_affected(change.changed_tiles)
-        logger.info("Tick %d — %s", self._tick_index, change.description)
         return change
 
     def run(self, max_ticks: int) -> MissionStats:

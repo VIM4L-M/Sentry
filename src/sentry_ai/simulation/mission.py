@@ -22,6 +22,7 @@ from sentry_ai.domain.enums import VictimStatus
 from sentry_ai.domain.map import CityMap
 from sentry_ai.domain.occupancy import OccupancyGrid
 from sentry_ai.interfaces.navigation import IRoutePlanner, Route
+from sentry_ai.simulation.events import EventKind, EventLog
 
 logger = get_logger(__name__)
 
@@ -79,6 +80,7 @@ class MissionController:
         grid: The command center's belief map, kept in sync each tick.
         planner: Global route planner, injected as a port.
         config: Success/failure/replanning rules.
+        events: Running record of what happened, for the HUD and demos.
     """
 
     city_map: CityMap
@@ -86,9 +88,11 @@ class MissionController:
     planner: IRoutePlanner
     config: MissionConfig
     stats: MissionStats = field(default_factory=MissionStats)
+    events: EventLog = field(default_factory=EventLog)
 
     _phase: MissionPhase = field(default=MissionPhase.PLANNING, init=False)
     _route: Route = field(default_factory=Route.unreachable, init=False)
+    _previous_route: Route = field(default_factory=Route.unreachable, init=False)
     _route_index: int = field(default=0, init=False)
     _abandoned: set[str] = field(default_factory=set, init=False)
 
@@ -101,6 +105,22 @@ class MissionController:
     def route(self) -> Route:
         """The route currently being followed (empty when none is active)."""
         return self._route
+
+    @property
+    def previous_route(self) -> Route:
+        """The route this one replaced, kept so a replan is visible.
+
+        Drawn greyed out behind the active route: seeing the plan that was
+        abandoned next to the plan that replaced it is what makes
+        "the world changed and the command center reacted" legible at a
+        glance rather than a number in a stats column.
+        """
+        return self._previous_route
+
+    def record(self, kind: EventKind, message: str) -> None:
+        """Log an event both to the log file and to the on-screen record."""
+        logger.info("%s", message)
+        self.events.record(self.stats.elapsed_seconds, kind, message)
 
     def next_waypoint(self) -> Position | None:
         """The tile the vehicle should drive toward now, if any."""
@@ -134,7 +154,7 @@ class MissionController:
 
         self.invalidate_route()
         self.stats.routes_cut_by_hazards += 1
-        logger.info("World changed under the active route — replanning")
+        self.record(EventKind.HAZARD, "world changed under the route — replanning")
         return True
 
     # ------------------------------------------------------------------
@@ -189,13 +209,16 @@ class MissionController:
             ):
                 victim.status = VictimStatus.ONBOARD
                 vehicle.onboard_victims.append(victim)
-                logger.info("Picked up %s at %s", victim.victim_id, victim.position.as_tuple())
+                self.record(
+                    EventKind.RESCUE,
+                    f"picked up {victim.victim_id} at {victim.position.as_tuple()}",
+                )
 
         if vehicle.onboard_victims and self.city_map.safe_zone.contains(vehicle.position):
             for victim in vehicle.onboard_victims:
                 victim.status = VictimStatus.RESCUED
                 self.stats.victims_rescued += 1
-                logger.info("Delivered %s to the hospital", victim.victim_id)
+                self.record(EventKind.RESCUE, f"delivered {victim.victim_id} to the hospital")
             vehicle.onboard_victims.clear()
 
     # ------------------------------------------------------------------
@@ -222,6 +245,7 @@ class MissionController:
                 self._replan(vehicle)
             return
 
+        self._previous_route = self._route
         self._route = route
         self._route_index = 0
         self.stats.replans += 1
@@ -230,12 +254,9 @@ class MissionController:
             if target.is_hospital
             else MissionPhase.EN_ROUTE_TO_VICTIM
         )
-        logger.info(
-            "Routing to %s at %s (%d waypoints, cost %.1f)",
-            target.label,
-            target.position.as_tuple(),
-            len(route),
-            route.cost,
+        self.record(
+            EventKind.ROUTE,
+            f"routing to {target.label} — {len(route)} tiles, cost {route.cost:.1f}",
         )
 
     def _select_target(self, vehicle: Vehicle) -> _Objective | None:
@@ -270,7 +291,7 @@ class MissionController:
             return
         self._abandoned.add(target.label)
         self.stats.victims_unreachable += 1
-        logger.warning("No route to %s — abandoning that objective", target.label)
+        self.record(EventKind.FAILURE, f"no route to {target.label} — abandoned")
 
     def _is_home(self, vehicle: Vehicle) -> bool:
         """Whether the vehicle is currently inside the safe zone."""
@@ -296,11 +317,10 @@ class MissionController:
         self._route = Route.unreachable()
         self._route_index = 0
         self._phase = MissionPhase.COMPLETED
-        logger.info(
-            "Mission complete: %d rescued, %d unreachable, %.1fs elapsed",
-            self.stats.victims_rescued,
-            self.stats.victims_unreachable,
-            self.stats.elapsed_seconds,
+        self.record(
+            EventKind.MISSION,
+            f"mission complete — {self.stats.victims_rescued} rescued, "
+            f"{self.stats.victims_unreachable} unreachable",
         )
 
     def _fail(self, reason: str) -> None:
@@ -309,7 +329,7 @@ class MissionController:
         self._route_index = 0
         self._phase = MissionPhase.FAILED
         self.stats.failure_reason = reason
-        logger.warning("Mission failed: %s", reason)
+        self.record(EventKind.FAILURE, f"mission failed — {reason}")
 
 
 @dataclass(frozen=True)

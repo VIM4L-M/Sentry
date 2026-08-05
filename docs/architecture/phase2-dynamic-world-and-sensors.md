@@ -134,6 +134,72 @@ The onboard camera is 9x9 tiles at 16 px — odd-sized so the vehicle sits dead 
 and clamped at the map edges so the frame never changes shape. A convolutional network
 cannot accept a frame that shrinks in a corner.
 
+## Presentation
+
+A separate, later pass, prompted by a review observing that the engineering was ahead
+of the visuals: a reviewer should be able to watch for thirty seconds and understand
+the story without narration. These decisions are about legibility, and none of them
+touched the architecture.
+
+### Glyphs are drawn, not loaded
+
+Victims, fire, debris, trees, the vehicle, and the hospital are Pygame primitives in
+`rendering/glyphs.py` rather than sprite assets. Image files would mean binaries in the
+repo, an asset loader, a search path, a scaling policy, and a licence question — a lot
+of machinery for what is fundamentally "draw a stick figure". Every glyph scales from
+the rect it is handed, so changing `render.tile_size_px` needs no new artwork.
+
+Drawing them surfaced two bugs that flat discs had hidden: rescued victims were still
+being drawn at the tile they were rescued from, and *trees were drawn as rubble* — they
+are both `Obstacle` entities, but a park is not a collapsed building.
+
+### Fire flickers on the map and never in a camera frame
+
+The operator display animates; `sensors/rasterizer.py` does not. That split already
+existed for a different reason — the detector needs stable imagery — and it is what
+makes animation free here. A flicker that reached the camera would inject variance into
+every training sample.
+
+The flicker only ever *shrinks* the flame. Scaling above full height pushed the tip into
+the tile above, which misreports where the fire is; there is a test asserting no glyph
+escapes its own tile at any phase.
+
+### The map and the camera palettes were aligned
+
+They remain separate files for the reason recorded above, but the entity colours in
+`configs/render.yaml` were moved to match `configs/sensors.yaml`. Both views are now on
+screen simultaneously, and a victim that was yellow on the map and pink in the camera
+thumbnail read as two different things.
+
+### The abandoned route stays on screen
+
+`MissionController.previous_route` keeps the plan a replan replaced, drawn greyed out
+beneath the live one. "Routes cut: 1" is a number; a grey path forking away from a blue
+one is the story. This is the cheapest possible way to make the system's most
+interesting behaviour visible.
+
+### The event log is a second audience, not a duplicate of the logger
+
+`simulation/events.py` holds a bounded `EventLog` fed by `MissionController.record`,
+which writes to the logger *and* the log in one call. The log file is for grep; the
+on-screen panel is for someone watching. Messages are phrased for the screen and
+ellipsized to fit, measured against the real font rather than an assumed character
+width.
+
+### `G` shows the belief, not the world
+
+`rendering/grid_overlay.py` draws the occupancy grid as colour-coded, numbered cells.
+Today it matches the world exactly and looks redundant. From Phase 3 it will be built
+from detections and will be wrong in interesting ways, and this is the view that will
+show *where* — the difference between "the vehicle drove somewhere strange" and "the
+grid believed that tile was debris".
+
+### The camera panel is Phase-3 furniture, built early
+
+It renders `CameraFrame`s with their detections boxed. Those detections are ground truth
+today and YOLO output later, and because a frame carries its own annotations, nothing
+about the panel changes when the producer does.
+
 ## Still open
 
 - **Weather** — listed as optional in the specification, not started. It would enter

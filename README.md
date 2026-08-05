@@ -44,7 +44,28 @@ python scripts/run_simulation.py --headless   # no window, prints the outcome
 | `Escape` | quit |
 | `Space` | pause / resume |
 | `Tab` | toggle autonomous ↔ manual driving |
+| `G` | toggle the occupancy-grid debug view |
+| `C` | toggle the camera panel |
 | arrows / `WASD` | drive (manual mode) |
+
+The window is laid out so a mission can be followed without narration:
+
+```
+┌────────────────────────────────┬──────────────┐
+│                                │  cctv_nw     │
+│   the city — terrain, glyphs,  │  cctv_ne     │  what the cameras see,
+│   CCTV footprints, and the     │  cctv_sw     │  with ground-truth boxes
+│   planned route (the route it  │  cctv_se     │  (YOLO output in Phase 3)
+│   replaced stays greyed out)   │  onboard     │
+├────────────────────────────────┴──────────────┤
+│ phase │ counters │ event log │ battery/health │
+└───────────────────────────────────────────────┘
+```
+
+Press `G` and the city is replaced by the occupancy grid the planner
+actually reasons over — the 0-6 codes, colour-coded and numbered. Today it
+matches the world exactly; from Phase 3 it will be built from detections and
+will be wrong in interesting ways, and this is how you will see that.
 
 Capture the synthetic perception dataset (what Phases 3 and 4 train on):
 

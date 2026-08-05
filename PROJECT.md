@@ -221,7 +221,10 @@ sentry/
 │       │   └── astar.py            # AStarPlanner
 │       ├── rendering/              # Pygame presentation layer
 │       │   ├── theme.py
+│       │   ├── glyphs.py           # procedural entity shapes (no asset files)
 │       │   ├── map_renderer.py
+│       │   ├── grid_overlay.py     # the occupancy-grid debug view (G)
+│       │   ├── camera_panel.py     # live camera strip (C)
 │       │   ├── hud.py
 │       │   ├── keyboard.py         # KeyboardController (manual driving)
 │       │   ├── simulation_app.py   # live mission window
@@ -230,6 +233,7 @@ sentry/
 │       │   ├── engine.py
 │       │   ├── mission.py
 │       │   ├── hazards.py          # fire spread + debris collapse
+│       │   ├── events.py           # bounded mission event log
 │       │   ├── vehicle_controller.py
 │       │   └── waypoint_follower.py
 │       ├── sensors/                # Phase 2 — synthetic cameras + ground truth
