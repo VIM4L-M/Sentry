@@ -28,6 +28,11 @@ entities:
   fire: [11, 11, 11]
   smoke: [12, 12, 12]
   obstacle: [13, 13, 13]
+hud:
+  panel: [14, 14, 14]
+  text: [15, 15, 15]
+  accent: [16, 16, 16]
+  warning: [17, 17, 17]
 """
 
 
@@ -52,6 +57,16 @@ class TestThemeFromConfig:
         assert theme.background.as_tuple() == (10, 10, 10)
         assert theme.terrain_colors[TerrainType.BUILDING].as_tuple() == (3, 3, 3)
         assert theme.entity_colors[EntityKind.FIRE].as_tuple() == (11, 11, 11)
+        assert theme.hud.accent.as_tuple() == (16, 16, 16)
+
+    def test_missing_hud_color_raises(self, tmp_path: Path) -> None:
+        incomplete = _FULL_PALETTE.replace("  accent: [16, 16, 16]\n", "")
+        palette_file = tmp_path / "render.yaml"
+        palette_file.write_text(incomplete, encoding="utf-8")
+        loader = ConfigLoader(project_root=tmp_path)
+
+        with pytest.raises(ConfigValidationError, match="hud.accent"):
+            Theme.from_config(loader, "render.yaml")
 
     def test_missing_terrain_color_raises(self, tmp_path: Path) -> None:
         incomplete = _FULL_PALETTE.replace("  building: [3, 3, 3]\n", "")

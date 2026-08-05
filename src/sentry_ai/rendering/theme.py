@@ -34,12 +34,30 @@ class Color:
 
 
 @dataclass(frozen=True)
+class HudPalette:
+    """Colors for the mission HUD, kept apart from world colors.
+
+    Attributes:
+        panel: Fill behind the stats panel.
+        text: Default label and value text.
+        accent: Planned-route markers and healthy gauge fills.
+        warning: Depleted gauges, failure text, and hazard callouts.
+    """
+
+    panel: Color
+    text: Color
+    accent: Color
+    warning: Color
+
+
+@dataclass(frozen=True)
 class Theme:
-    """A complete color mapping for every terrain type and entity kind."""
+    """A complete color mapping for every terrain type, entity kind, and HUD element."""
 
     background: Color
     terrain_colors: dict[TerrainType, Color]
     entity_colors: dict[EntityKind, Color]
+    hud: HudPalette
 
     @classmethod
     def from_config(cls, loader: ConfigLoader, relative_path: PathLike) -> Theme:
@@ -47,7 +65,7 @@ class Theme:
 
         Raises:
             ConfigValidationError: If any :class:`TerrainType` or
-                :class:`EntityKind` member has no color assigned.
+                :class:`EntityKind` member, or any HUD color, has no entry.
         """
         data = loader.load_yaml(relative_path)
 
@@ -69,8 +87,19 @@ class Theme:
             for entity_kind in EntityKind
         }
 
+        hud_section = data.get("hud", {})
+        hud = HudPalette(
+            panel=_color_from_entry(hud_section.get("panel"), label="hud.panel"),
+            text=_color_from_entry(hud_section.get("text"), label="hud.text"),
+            accent=_color_from_entry(hud_section.get("accent"), label="hud.accent"),
+            warning=_color_from_entry(hud_section.get("warning"), label="hud.warning"),
+        )
+
         return cls(
-            background=background, terrain_colors=terrain_colors, entity_colors=entity_colors
+            background=background,
+            terrain_colors=terrain_colors,
+            entity_colors=entity_colors,
+            hud=hud,
         )
 
 

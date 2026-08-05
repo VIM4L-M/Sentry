@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from sentry_ai.common.exceptions import DomainValidationError
 from sentry_ai.common.types import GridCoordinate
-from sentry_ai.domain.enums import EntityKind, TerrainType, VictimStatus
+from sentry_ai.domain.enums import EntityKind, Heading, TerrainType, VictimStatus
 
 
 @dataclass(frozen=True)
@@ -141,6 +141,7 @@ class Vehicle:
     """
 
     position: Position
+    heading: Heading = Heading.NORTH
     battery_percent: float = 100.0
     health_percent: float = 100.0
     capacity: int = 2

@@ -5,8 +5,10 @@ Deep Learning project. See [`PROJECT.md`](PROJECT.md) for the full architecture,
 diagrams, phase roadmap, and API contracts. See [`CLAUDE.md`](CLAUDE.md) for the working
 rules this codebase follows.
 
-**Status:** Phase 1 (Foundation & Core Architecture) complete. See PROJECT.md §10-11 for
-the phase breakdown and milestones.
+**Status:** Phase 1 complete. Phase 2 core complete — a full autonomous rescue mission
+runs end to end (occupancy grid → A\* routing → mission control → live HUD). Dynamic
+hazards and the CCTV sensor rig are the next increment. See PROJECT.md §10-11 for the
+phase breakdown and milestones.
 
 ## Quick Start
 
@@ -28,8 +30,21 @@ mypy src scripts                                 # type checking
 ruff check src tests scripts                      # linting
 ```
 
-Render the disaster city (Phase 1's walking skeleton — opens a window, no AI, no
-movement yet):
+Run a rescue mission (Phase 2 — the vehicle plans routes and drives itself):
+
+```bash
+python scripts/run_simulation.py              # windowed
+python scripts/run_simulation.py --headless   # no window, prints the outcome
+```
+
+| Key | Action |
+|---|---|
+| `Escape` | quit |
+| `Space` | pause / resume |
+| `Tab` | toggle autonomous ↔ manual driving |
+| arrows / `WASD` | drive (manual mode) |
+
+Render the static disaster city instead (Phase 1's walking skeleton — no movement):
 
 ```bash
 python scripts/run_preview.py
@@ -49,11 +64,23 @@ pip install -r requirements-ml.txt
 
 ```
 configs/     All tunables — YAML, loaded into typed dataclasses (see config/schema.py)
-src/sentry_ai/  The package: common, config, domain, interfaces, rendering, ...
+src/sentry_ai/
+  common/      Logging, exceptions, shared type aliases
+  config/      Typed config schema + the only code that reads YAML
+  domain/      Entities, enums, CityMap, OccupancyGrid — pure Python, no frameworks
+  interfaces/  Ports (ABCs): perception, sequence, navigation, decision fusion
+  navigation/  A* global route planner (classical, not learned)
+  simulation/  Tick engine, mission state machine, vehicle physics
+  rendering/   Pygame map renderer, HUD, keyboard input, mission window
 scripts/     Composition roots / CLI entry points
 tests/       unit / integration / e2e, mirroring src/
 docs/        Phase design notes and ADRs
 ```
+
+**How navigation is split:** A\* plans the route across the city from an occupancy
+grid; a learned local controller (Phase 6 DQN, today a deterministic waypoint
+follower) decides each tick's move. The reasoning is in
+[`docs/adr/0002-two-tier-navigation-and-command-center.md`](docs/adr/0002-two-tier-navigation-and-command-center.md).
 
 See PROJECT.md §4 for the full target folder structure (including packages not yet
 built, owned by later phases).
@@ -71,4 +98,7 @@ built, owned by later phases).
 
 - [`PROJECT.md`](PROJECT.md) — architecture, diagrams, roadmap, contracts (canonical, kept current)
 - [`docs/architecture/`](docs/architecture/) — per-phase design notes
+  ([Phase 1](docs/architecture/phase1-foundation.md), [Phase 2](docs/architecture/phase2-simulation.md))
 - [`docs/adr/`](docs/adr/) — Architecture Decision Records
+  ([0001 config](docs/adr/0001-config-driven-yaml-dataclasses.md),
+  [0002 two-tier navigation](docs/adr/0002-two-tier-navigation-and-command-center.md))

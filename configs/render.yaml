@@ -19,3 +19,11 @@ entities:
   fire: [224, 62, 32]
   smoke: [150, 150, 150]
   obstacle: [184, 92, 42]
+
+# Mission HUD (Phase 2). Kept separate from world colors so the city can be
+# re-skinned without touching instrument legibility.
+hud:
+  panel: [18, 18, 22]
+  text: [226, 226, 232]
+  accent: [46, 134, 222]
+  warning: [224, 62, 32]

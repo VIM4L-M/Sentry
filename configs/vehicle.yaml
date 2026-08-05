@@ -1,0 +1,25 @@
+# Rescue vehicle limits and battery model.
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_vehicle_config().
+# Every key is optional — an omitted key uses the dataclass default in
+# sentry_ai.config.schema.
+
+# How many victims can ride at once.
+capacity: 2
+
+battery:
+  initial_percent: 100.0
+  # Percent spent per forward/reverse step, per 90-degree turn, and per
+  # tick spent stopped. Tuned so a full crossing of the 30x20 city plus a
+  # return leg fits comfortably inside one charge.
+  drain_per_move: 0.35
+  drain_per_turn: 0.10
+  drain_per_idle_tick: 0.02
+
+# Health lost on driving into something impassable, and per tick spent
+# inside a fire tile.
+collision_damage_percent: 5.0
+fire_damage_per_tick: 2.0
+
+# How far the onboard sensors reach, in tiles. Sets the fire-proximity
+# horizon now and the onboard camera footprint from Phase 3.
+sensor_range_tiles: 5.0

@@ -1,0 +1,26 @@
+# Tick-based simulation engine and command-center rules.
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_simulation_config().
+# Every key is optional — an omitted key uses the dataclass default in
+# sentry_ai.config.schema.
+
+# Fixed simulation steps per second, deliberately decoupled from
+# render.target_fps: physics must not change speed with the frame rate.
+tick_rate_hz: 10.0
+
+mission:
+  # Wall-clock budget for the whole mission, in simulated seconds.
+  time_limit_seconds: 300.0
+  # Re-run A* when the vehicle reports its route is obstructed.
+  replan_on_blocked_route: true
+  # Below this battery percentage the controller abandons the search and
+  # drives straight for the hospital while it still can.
+  min_battery_to_continue: 15.0
+
+planner:
+  # Extra A* cost for a tile near a known fire. Raise to make the planner
+  # detour further around heat; set to 0.0 for pure shortest-path.
+  fire_risk_penalty: 6.0
+  fire_risk_radius: 2
+  # Small cost per direction change, so routes come out straighter and
+  # produce fewer waypoints for the vehicle to chase.
+  turn_penalty: 0.4

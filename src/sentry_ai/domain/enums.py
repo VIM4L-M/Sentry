@@ -40,6 +40,48 @@ _BLOCKING_TERRAIN = frozenset(
 )
 
 
+class Heading(Enum):
+    """Which way the rescue vehicle currently faces.
+
+    The vehicle is heading-aware because its local action space is
+    egocentric (turn left / turn right / forward / reverse), not absolute —
+    see ``interfaces/navigation.py``. Values are the ``(dx, dy)`` step taken
+    when moving forward, in tile space with ``y`` growing downward.
+    """
+
+    NORTH = (0, -1)
+    EAST = (1, 0)
+    SOUTH = (0, 1)
+    WEST = (-1, 0)
+
+    @property
+    def delta(self) -> tuple[int, int]:
+        """The ``(dx, dy)`` offset of one forward step in this heading."""
+        return self.value
+
+    def turn_left(self) -> Heading:
+        """The heading 90 degrees counter-clockwise from this one."""
+        order = _HEADING_CLOCKWISE
+        return order[(order.index(self) - 1) % len(order)]
+
+    def turn_right(self) -> Heading:
+        """The heading 90 degrees clockwise from this one."""
+        order = _HEADING_CLOCKWISE
+        return order[(order.index(self) + 1) % len(order)]
+
+    def opposite(self) -> Heading:
+        """The heading 180 degrees from this one."""
+        return self.turn_right().turn_right()
+
+
+_HEADING_CLOCKWISE: tuple[Heading, ...] = (
+    Heading.NORTH,
+    Heading.EAST,
+    Heading.SOUTH,
+    Heading.WEST,
+)
+
+
 class VictimStatus(Enum):
     """Lifecycle state of a :class:`~sentry_ai.domain.entities.Victim`."""
 

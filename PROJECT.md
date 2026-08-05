@@ -1,7 +1,7 @@
 # SENTRY AI — Autonomous Emergency Rescue Vehicle for Disaster Zones
 
 **Type:** Semester-long Applied Deep Learning project (simulation-based)
-**Status:** Architecture approved — Phase 1 complete, Phase 2 pending
+**Status:** Architecture approved — Phase 1 complete, Phase 2 core complete (see §10)
 **Audience:** Single student developer, evaluated to production-software standards
 
 This document is the canonical architecture reference for SENTRY AI. It is intentionally
@@ -52,12 +52,17 @@ demo:
 | II | YOLOv8n, transfer learning | Detects victims, fire, obstacles in camera frames |
 | III | LSTM | Predicts near-term vehicle motion / navigation behaviour class from state history |
 | IV | Denoising Autoencoder | Cleans noisy/occluded camera frames before detection |
-| V | Deep Q-Network (SB3) | Learns the autonomous navigation policy inside a Gymnasium environment |
+| V | Deep Q-Network (SB3) | Learns the *local* navigation policy — obstacle avoidance, waiting, rerouting — inside a Gymnasium environment |
+
+Global routing is deliberately **not** learned: A* over an occupancy grid handles
+city-scale pathfinding, and the DQN handles per-tick execution. See
+[ADR 0002](docs/adr/0002-two-tier-navigation-and-command-center.md).
 
 The system is built as a **walking skeleton first**: every phase produces a runnable,
 tested increment. AI modules are introduced behind stable interfaces so the simulation
-and rendering layers never depend on a specific model implementation — a fresh
-`DQNPolicy` can replace a scripted policy without touching simulation code.
+and rendering layers never depend on a specific model implementation — a trained
+`DqnLocalController` replaces the deterministic `WaypointFollower` without touching
+simulation code.
 
 ---
 
@@ -77,10 +82,12 @@ running through it.
 │                 on frameworks, pure Python + dataclasses)    │
 ├─────────────────────────────────────────────────────────────┤
 │  Ports         (interfaces/ — abstract contracts: vision,    │
-│                 denoiser, sequence predictor, policy, fusion)│
+│                 denoiser, sequence, route planner, local     │
+│                 controller, fusion)                          │
 ├─────────────────────────────────────────────────────────────┤
-│  Adapters      (perception/, sequence/, decision/ — concrete │
-│                 PyTorch / YOLO / SB3 implementations of ports)│
+│  Adapters      (navigation/, perception/, sequence/,         │
+│                 decision/ — A* plus the concrete PyTorch /   │
+│                 YOLO / SB3 implementations of the ports)     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -113,7 +120,7 @@ Rules enforced project-wide:
 │                        Simulation Engine (Phase 2)                │
 │  ┌───────────┐  ┌────────────┐  ┌───────────────┐  ┌──────────┐  │
 │  │ CityMap   │  │ MissionCtl │  │ SensorRig       │  │ Renderer │  │
-│  │ (domain)  │  │ (state mgr)│  │ (frame capture) │  │ (pygame) │  │
+│  │ (domain)  │  │ + A* / grid│  │ (frame capture) │  │ + HUD    │  │
 │  └───────────┘  └─────┬──────┘  └───────┬────────┘  └──────────┘  │
 └────────────────────────┼────────────────┼──────────────────────────┘
                           │                │ raw frame
@@ -136,7 +143,7 @@ Rules enforced project-wide:
                           │                │ behaviour signal
                           │                ▼
                           │      ┌───────────────────┐
-                          │      │ INavigationPolicy  │ (Ph.6)
+                          │      │ ILocalController   │ (Ph.6)
                           │      │ (DQN via SB3)       │
                           │      └─────────┬──────────┘
                           │                │ candidate action / Q-values
@@ -200,17 +207,27 @@ sentry/
 │       ├── domain/                 # pure business entities & rules
 │       │   ├── enums.py
 │       │   ├── entities.py
-│       │   └── map.py
+│       │   ├── map.py
+│       │   └── occupancy.py        # OccupancyGrid + the 0-6 code contract
 │       ├── interfaces/             # ports — ABCs implemented by AI adapters
 │       │   ├── perception.py       # IVisionDetector, IDenoiser
 │       │   ├── sequence.py         # IMotionPredictor
-│       │   └── decision.py         # INavigationPolicy, IDecisionFusion
+│       │   ├── navigation.py       # IRoutePlanner, ILocalController
+│       │   └── decision.py         # IDecisionFusion
+│       ├── navigation/             # global routing adapters (classical, not learned)
+│       │   └── astar.py            # AStarPlanner
 │       ├── rendering/              # Pygame presentation layer
 │       │   ├── theme.py
 │       │   ├── map_renderer.py
-│       │   ├── hud.py              # Phase 2
-│       │   └── app.py
-│       ├── simulation/             # Phase 2 — engine, mission, sensors, physics
+│       │   ├── hud.py
+│       │   ├── keyboard.py         # KeyboardController (manual driving)
+│       │   ├── simulation_app.py   # live mission window
+│       │   └── app.py              # static preview window
+│       ├── simulation/             # Phase 2 — engine, mission, physics, sensors
+│       │   ├── engine.py
+│       │   ├── mission.py
+│       │   ├── vehicle_controller.py
+│       │   └── waypoint_follower.py
 │       ├── perception/             # Phase 3/4 — YOLO + autoencoder adapters
 │       ├── sequence/                # Phase 5 — LSTM adapter
 │       ├── decision/                 # Phase 6/7 — DQN policy + MLP fusion adapters
@@ -219,7 +236,7 @@ sentry/
 │
 ├── scripts/                        # composition roots / CLI entry points
 │   ├── run_preview.py              # Phase 1: render static city map
-│   ├── run_simulation.py           # Phase 2
+│   ├── run_simulation.py           # Phase 2: run a live/headless rescue mission
 │   ├── train_yolo.py               # Phase 3
 │   ├── train_autoencoder.py        # Phase 4
 │   ├── train_lstm.py               # Phase 5
@@ -258,10 +275,11 @@ placeholder code" rule.
 | `domain/` | Entities (Vehicle, Victim, Fire, Obstacle, Building, SafeZone…), the `CityMap` aggregate, domain enums | Know about Pygame, PyTorch, files on disk |
 | `interfaces/` | Abstract contracts (ports) every AI adapter must satisfy | Contain any model logic |
 | `rendering/` | Drawing domain state to a Pygame surface, HUD | Mutate domain/simulation state |
-| `simulation/` (Ph.2) | Tick loop, mission state machine, vehicle movement, sensor frame capture | Know about specific model classes — only interfaces |
+| `simulation/` (Ph.2) | Tick loop, mission state machine, vehicle physics, sensor frame capture | Know about specific model classes — only interfaces; import Pygame |
+| `navigation/` (Ph.2) | `AStarPlanner` — global routing over the occupancy grid | Learn anything, or decide per-tick actions |
 | `perception/` (Ph.3/4) | `YoloDetector`, `ConvDenoisingAutoencoder` adapters implementing the perception ports | Drive the render loop or own domain entities |
 | `sequence/` (Ph.5) | `LstmMotionPredictor` adapter | — |
-| `decision/` (Ph.6/7) | `DqnPolicy`, `MlpFusion` adapters | — |
+| `decision/` (Ph.6/7) | `DqnLocalController`, `MlpFusion` adapters | Plan city-scale routes — that is `navigation/`'s job |
 | `training/` (Ph.3-7) | Dataset assembly, training loops, checkpointing, metrics logging | Contain inference-time orchestration |
 | `app/` (Ph.9) | Streamlit dashboard reading mission logs/replays | Run training or the live sim loop |
 
@@ -287,21 +305,38 @@ IVisionDetector.detect(clean_frame) ────► Detection[] {label, bbox, co
 IMotionPredictor.predict(state_history, Detection[]) ─► BehaviourSignal
         │
         ▼
-INavigationPolicy.act(observation) ─────► action_candidate, q_values
+ILocalController.decide(observation) ───► LocalDecision {action, q_values}
+        │       (the route it follows comes from IRoutePlanner — see below)
+        ▼
+IDecisionFusion.fuse(Detection[], BehaviourSignal, LocalDecision) ─► FinalAction
         │
         ▼
-IDecisionFusion.fuse(Detection[], BehaviourSignal, q_values) ─► FinalAction
+VehicleController.apply(FinalAction) ───► updates Vehicle, Battery, Health
         │
         ▼
-MissionController.apply(FinalAction) ───► updates Vehicle, Victims, Battery, Timer
+MissionController.update() ─────────────► pickups, deliveries, replans, timer
         │
         ▼
 Renderer.draw(CityMap, Vehicle, HUD state) ─► frame on screen
 ```
 
-**Phase 1 data flow (what exists today)** is the top and bottom of this diagram only:
-`ConfigLoader → CityMap → Renderer`, with every AI stage represented solely as an
-unfulfilled interface. No frame ever flows through them yet.
+**Global routing runs on its own cadence**, not once per tick — the command center
+replans only when a route is finished, obstructed, or invalidated:
+
+```
+CityMap ──► OccupancyGrid.from_city_map()   (Phase 3: projected YOLO detections instead)
+        │
+        ▼
+IRoutePlanner.plan(grid, start, goal) ──► Route {waypoints, cost}   [A*, not learned]
+        │
+        ▼
+MissionController.next_waypoint() ─────► fed into every LocalObservation
+```
+
+**What exists today (Phase 2)** is that global loop plus the tick loop with a
+deterministic `WaypointFollower` standing in for `ILocalController`. Every perception
+and sequence stage above is still an unfulfilled interface — no frame flows through
+them yet.
 
 ---
 
@@ -582,7 +617,7 @@ sequenceDiagram
 | Phase | Title | Weeks | Syllabus Unit(s) | Status |
 |---|---|---|---|---|
 | 1 | Foundation & Core Architecture | 1-2 | — (infra) | ✅ **Complete** |
-| 2 | Simulation Engine & Game Loop | 3-4 | — (infra) | ⏳ Not started |
+| 2 | Simulation Engine, Occupancy Grid & A* Routing | 3-4 | — (infra) | 🚧 Core complete |
 | 3 | Computer Vision — Detection | 5-6 | Unit II | ⏳ Not started |
 | 4 | Representation Learning — Denoising AE | 7 | Unit IV | ⏳ Not started |
 | 5 | Sequence Modeling — LSTM | 8 | Unit III | ⏳ Not started |
@@ -611,17 +646,29 @@ Deliverables:
 Explicitly **out of scope** for Phase 1: vehicle movement, battery/timer countdown,
 fire spread, sensors, HUD, any PyTorch/YOLO/RL code. These belong to Phases 2-7.
 
-### Phase 2 — Simulation Engine & Game Loop
+### Phase 2 — Simulation Engine, Occupancy Grid & A* Routing 🚧
 
-- Tick-based `SimulationEngine` (fixed timestep), `MissionController` state machine
-- Vehicle kinematics (grid or continuous movement — decided in Phase 2 ADR), collision
-  against `blocks_movement` terrain/obstacles
-- Battery drain model, mission timer, mission-objective tracking
-- `SensorRig`: renders the vehicle's local view to an `ndarray` (the "camera frame")
-  used by every AI phase from here on
-- Fire/smoke spread (simple cellular automaton over `TerrainType`)
-- HUD rendering (battery, timer, victims rescued/remaining, vehicle health)
-- Manual/keyboard control mode for debugging (stand-in for `INavigationPolicy`)
+Architecture note: this phase split navigation into a global (A*) and a local (DQN)
+tier — see [ADR 0002](docs/adr/0002-two-tier-navigation-and-command-center.md) and
+[`docs/architecture/phase2-simulation.md`](docs/architecture/phase2-simulation.md).
+
+Done:
+- Tick-based `SimulationEngine` (fixed timestep, decoupled from frame rate)
+- `OccupancyGrid` with the specification's 0-6 codes, built from the city
+- `AStarPlanner` — risk-aware global routing over that grid
+- `MissionController` state machine: objective selection, pickups, deliveries,
+  replanning, unreachable-objective handling, success/failure adjudication
+- `VehicleController`: egocentric movement, collision, battery drain, fire damage
+- `WaypointFollower` — the deterministic `ILocalController` baseline the DQN must beat
+- HUD (phase, waypoint, stats, battery/health gauges) and route overlay
+- Manual keyboard driving through the same action space and physics
+- `scripts/run_simulation.py`, windowed and `--headless`
+
+Remaining:
+- `SensorRig`: renders CCTV and onboard views to `ndarray` frames — the input every
+  AI phase from here on consumes
+- Fire/smoke spread (cellular automaton) and mid-mission dynamic obstacles
+- Weather (optional per the specification)
 
 ### Phase 3 — Computer Vision (Unit II)
 
@@ -646,11 +693,13 @@ fire spread, sensors, HUD, any PyTorch/YOLO/RL code. These belong to Phases 2-7.
 ### Phase 6 — Reinforcement Learning (Unit V)
 
 - `SentryEnv`: Gymnasium-compliant wrapper around the Phase 2 simulation engine
-- Reward shaping: +rescue, +progress-to-safe-zone, −collision, −fire-proximity, −time,
-  −battery-waste (all weights config-driven, `configs/training/dqn.yaml`)
-- Stable-Baselines3 DQN training pipeline (`train_dqn.py`); state-based observation first,
-  vision-based observation as a stretch goal
-- `DqnPolicy` adapter implementing `INavigationPolicy`
+- Reward shaping is **local**, not city-scale (see ADR 0002): +progress along the
+  planned route, +rescue, −collision, −fire-proximity, −time, −battery-waste (all
+  weights config-driven, `configs/training/dqn.yaml`)
+- Stable-Baselines3 DQN training pipeline (`train_dqn.py`); state-based observation first
+  (`LocalObservation.as_array()`), vision-based observation as a stretch goal
+- `DqnLocalController` adapter implementing `ILocalController`, scored against the
+  `WaypointFollower` baseline
 
 ### Phase 7 — Decision Fusion (Unit I)
 
@@ -682,8 +731,11 @@ fire spread, sensors, HUD, any PyTorch/YOLO/RL code. These belong to Phases 2-7.
 
 - [x] **M1 — Walking Skeleton**: `pytest` green, `scripts/run_preview.py` renders the
       default disaster city map end-to-end. *(Phase 1)*
-- [ ] **M2 — Living City**: vehicle moves under manual control, battery/timer function,
-      fire spreads, HUD renders live stats. *(Phase 2)*
+- [x] **M2a — Living City**: vehicle moves under manual *and* autonomous control,
+      battery/timer function, HUD renders live stats, A* routes across the city, a
+      complete mission runs unattended. *(Phase 2)*
+- [ ] **M2b — Changing City**: fire spreads, obstacles appear mid-mission, and the
+      command center replans around them; `SensorRig` emits camera frames. *(Phase 2)*
 - [ ] **M3 — Sees**: YOLOv8n detects victims/fire/obstacles in simulated camera frames
       above target mAP. *(Phase 3)*
 - [ ] **M4 — Sees Clearly**: denoising autoencoder measurably improves detection mAP
@@ -719,18 +771,27 @@ class IVisionDetector(ABC):
 class IMotionPredictor(ABC):
     def predict(self, state_history: Sequence[VehicleState]) -> BehaviourSignal: ...
 
-# interfaces/decision.py
-class INavigationPolicy(ABC):
-    def act(self, observation: NDArray[np.float32]) -> PolicyOutput: ...
+# interfaces/navigation.py  — two tiers, see ADR 0002
+class IRoutePlanner(ABC):                      # global: A*, deterministic
+    def plan(self, grid: OccupancyGridLike, start: Position, goal: Position) -> Route: ...
 
+class ILocalController(ABC):                   # local: DQN (Phase 6)
+    def decide(self, observation: LocalObservation) -> LocalDecision: ...
+
+# interfaces/decision.py
 class IDecisionFusion(ABC):
     def fuse(
         self,
         detections: list[Detection],
         behaviour: BehaviourSignal,
-        policy_output: PolicyOutput,
+        local_decision: LocalDecision,
     ) -> FinalAction: ...
 ```
+
+The vehicle's action space is **egocentric** — `MOVE_FORWARD`, `REVERSE`, `TURN_LEFT`,
+`TURN_RIGHT`, `STOP` — so a learned policy generalizes across approach directions.
+`LOCAL_ACTION_ORDER` fixes the index each action occupies in a network's output;
+appending is safe, reordering invalidates every checkpoint.
 
 Contract rules:
 
@@ -755,10 +816,41 @@ All configuration is YAML, loaded into typed, validated dataclasses (`config/sch
 ```yaml
 logging_config: "configs/logging.yaml"
 map_config: "configs/maps/city_default.yaml"
+simulation_config: "configs/simulation.yaml"   # optional: preview-only configs omit it
+vehicle_config: "configs/vehicle.yaml"         # optional: preview-only configs omit it
 render:
   window_title: "SENTRY AI — Disaster City Preview"
-  tile_size_px: 32
+  tile_size_px: 28
   target_fps: 60
+  palette_config: "configs/render.yaml"
+```
+
+`configs/simulation.yaml` and `configs/vehicle.yaml` (Phase 2). Every key in both is
+**optional** — an omitted key falls back to its dataclass default, so adding a tunable
+never breaks an existing config file:
+
+```yaml
+# simulation.yaml
+tick_rate_hz: 10.0            # fixed sim step, decoupled from render.target_fps
+mission:
+  time_limit_seconds: 300.0
+  replan_on_blocked_route: true
+  min_battery_to_continue: 15.0
+planner:
+  fire_risk_penalty: 6.0      # extra A* cost near known fire; 0.0 = pure shortest path
+  fire_risk_radius: 2
+  turn_penalty: 0.4
+
+# vehicle.yaml
+capacity: 2
+battery:
+  initial_percent: 100.0
+  drain_per_move: 0.35
+  drain_per_turn: 0.10
+  drain_per_idle_tick: 0.02
+collision_damage_percent: 5.0
+fire_damage_per_tick: 2.0
+sensor_range_tiles: 5.0
 ```
 
 `configs/maps/city_default.yaml` (excerpt — full file has the real 30x20 city):

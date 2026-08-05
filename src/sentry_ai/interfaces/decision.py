@@ -1,67 +1,51 @@
-"""Ports for navigation policy (Unit V) and decision fusion (Unit I).
+"""Port for decision fusion (Unit I) — the last stage before the vehicle acts.
 
-``INavigationPolicy`` is implemented in Phase 6 by a Deep Q-Network trained
-with Stable-Baselines3. ``IDecisionFusion`` is implemented in Phase 7 by an
-MLP (PyTorch, Adam, ReLU, Dropout) that combines every upstream AI signal
-into the vehicle's final action. This file defines the contracts only.
+Implemented in Phase 7 by an MLP (PyTorch, Adam, ReLU, Dropout) that
+combines every upstream AI signal — the detector's findings, the LSTM's
+behaviour prediction, and the DQN's Q-values — into the single action the
+vehicle executes this tick. This file defines the contract only.
+
+The navigation contracts that used to live here (``VehicleAction``,
+``PolicyOutput``, ``INavigationPolicy``) moved to
+:mod:`sentry_ai.interfaces.navigation` when routing was split into a global
+A* tier and a local DQN tier — see
+``docs/adr/0002-two-tier-navigation-and-command-center.md``.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import Enum
 
-import numpy as np
-from numpy.typing import NDArray
-
+from sentry_ai.common.exceptions import DomainValidationError
+from sentry_ai.interfaces.navigation import LocalAction, LocalDecision
 from sentry_ai.interfaces.perception import Detection
 from sentry_ai.interfaces.sequence import BehaviourSignal
 
 
-class VehicleAction(Enum):
-    """The discrete actions the vehicle's policy can choose between."""
-
-    MOVE_NORTH = "move_north"
-    MOVE_SOUTH = "move_south"
-    MOVE_EAST = "move_east"
-    MOVE_WEST = "move_west"
-    HOLD_POSITION = "hold_position"
-    PICKUP_VICTIM = "pickup_victim"
-    DROP_OFF_VICTIM = "drop_off_victim"
-
-
-@dataclass(frozen=True)
-class PolicyOutput:
-    """An :class:`INavigationPolicy`'s chosen action and its Q-value estimates."""
-
-    action: VehicleAction
-    q_values: dict[VehicleAction, float]
-
-
 @dataclass(frozen=True)
 class FinalAction:
-    """The single action the vehicle will execute this tick, after fusion."""
+    """The single action the vehicle will execute this tick, after fusion.
 
-    action: VehicleAction
-    rationale_score: float
-
-
-class INavigationPolicy(ABC):
-    """Chooses a navigation action from an observation.
-
-    Implemented in Phase 6 by a Deep Q-Network (Unit V — Reinforcement
-    Learning) trained inside the Gymnasium ``SentryEnv``.
+    Attributes:
+        action: The egocentric move to execute.
+        rationale_score: The fusion network's confidence in this action,
+            0-1. Surfaced on the dashboard so an operator can see how sure
+            the system was, not just what it did.
     """
 
-    @abstractmethod
-    def act(self, observation: NDArray[np.float32]) -> PolicyOutput:
-        """Return the chosen action and its Q-value estimates for ``observation``."""
-        raise NotImplementedError
+    action: LocalAction
+    rationale_score: float
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.rationale_score <= 1.0:
+            raise DomainValidationError(
+                f"FinalAction.rationale_score must be within 0.0-1.0, got {self.rationale_score}"
+            )
 
 
 class IDecisionFusion(ABC):
-    """Fuses perception, sequence, and policy signals into one final action.
+    """Fuses perception, sequence, and local-policy signals into one action.
 
     Implemented in Phase 7 by an MLP (Unit I — Deep Learning Fundamentals:
     PyTorch, Adam, ReLU, Dropout).
@@ -72,7 +56,7 @@ class IDecisionFusion(ABC):
         self,
         detections: list[Detection],
         behaviour: BehaviourSignal,
-        policy_output: PolicyOutput,
+        local_decision: LocalDecision,
     ) -> FinalAction:
         """Combine every upstream signal into the vehicle's final action this tick."""
         raise NotImplementedError

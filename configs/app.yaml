@@ -5,6 +5,11 @@
 logging_config: "configs/logging.yaml"
 map_config: "configs/maps/city_default.yaml"
 
+# Mission-time configs. Optional: scripts/run_preview.py never reads them,
+# scripts/run_simulation.py requires them.
+simulation_config: "configs/simulation.yaml"
+vehicle_config: "configs/vehicle.yaml"
+
 render:
   window_title: "SENTRY AI — Disaster City Preview"
   tile_size_px: 28

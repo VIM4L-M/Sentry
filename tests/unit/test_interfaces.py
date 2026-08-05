@@ -10,13 +10,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from sentry_ai.common.exceptions import DomainValidationError
 from sentry_ai.domain.enums import EntityKind
-from sentry_ai.interfaces.decision import (
-    FinalAction,
-    IDecisionFusion,
-    INavigationPolicy,
-    PolicyOutput,
-    VehicleAction,
+from sentry_ai.interfaces.decision import FinalAction, IDecisionFusion
+from sentry_ai.interfaces.navigation import (
+    ILocalController,
+    IRoutePlanner,
+    LocalAction,
+    LocalDecision,
 )
 from sentry_ai.interfaces.perception import BoundingBox, Detection, IDenoiser, IVisionDetector
 from sentry_ai.interfaces.sequence import BehaviourClass, BehaviourSignal, IMotionPredictor
@@ -35,9 +36,13 @@ class TestPortsAreAbstract:
         with pytest.raises(TypeError):
             IMotionPredictor()  # type: ignore[abstract]
 
-    def test_inavigationpolicy_cannot_be_instantiated(self) -> None:
+    def test_iroutplanner_cannot_be_instantiated(self) -> None:
         with pytest.raises(TypeError):
-            INavigationPolicy()  # type: ignore[abstract]
+            IRoutePlanner()  # type: ignore[abstract]
+
+    def test_ilocalcontroller_cannot_be_instantiated(self) -> None:
+        with pytest.raises(TypeError):
+            ILocalController()  # type: ignore[abstract]
 
     def test_idecisionfusion_cannot_be_instantiated(self) -> None:
         with pytest.raises(TypeError):
@@ -77,14 +82,19 @@ class TestBehaviourSignal:
             BehaviourSignal(predicted_class=BehaviourClass.ADVANCE, confidence=-0.1)
 
 
-class TestPolicyOutputAndFinalAction:
-    def test_policy_output_holds_q_values(self) -> None:
-        output = PolicyOutput(
-            action=VehicleAction.MOVE_NORTH,
-            q_values={VehicleAction.MOVE_NORTH: 0.9, VehicleAction.HOLD_POSITION: 0.1},
+class TestLocalDecisionAndFinalAction:
+    def test_local_decision_holds_q_values(self) -> None:
+        decision = LocalDecision(
+            action=LocalAction.MOVE_FORWARD,
+            q_values={LocalAction.MOVE_FORWARD: 0.9, LocalAction.STOP: 0.1},
         )
-        assert output.q_values[VehicleAction.MOVE_NORTH] == 0.9
+        assert decision.q_values[LocalAction.MOVE_FORWARD] == 0.9
 
     def test_final_action_holds_rationale_score(self) -> None:
-        action = FinalAction(action=VehicleAction.PICKUP_VICTIM, rationale_score=0.87)
-        assert action.action is VehicleAction.PICKUP_VICTIM
+        action = FinalAction(action=LocalAction.TURN_LEFT, rationale_score=0.87)
+        assert action.action is LocalAction.TURN_LEFT
+
+    @pytest.mark.parametrize("score", [-0.1, 1.1])
+    def test_final_action_rejects_out_of_range_score(self, score: float) -> None:
+        with pytest.raises(DomainValidationError):
+            FinalAction(action=LocalAction.STOP, rationale_score=score)
