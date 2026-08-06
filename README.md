@@ -5,7 +5,7 @@ Deep Learning project. See [`PROJECT.md`](PROJECT.md) for the full architecture,
 diagrams, phase roadmap, and API contracts. See [`CLAUDE.md`](CLAUDE.md) for the working
 rules this codebase follows.
 
-**Status:** Phases 1 and 2 complete. A full autonomous rescue mission runs end to end
+**Status:** Phases 1 and 2 complete; Phase 3.1 (YOLOv8n detection) in progress. A full autonomous rescue mission runs end to end
 (occupancy grid → A\* routing → mission control → live HUD) in a city that changes
 underneath it: fire spreads, buildings collapse into the streets, and the command
 center replans around both. A four-camera CCTV network plus the vehicle's onboard view
@@ -103,6 +103,31 @@ From Phase 3 onward you'll also need the heavier ML stack:
 ```bash
 pip install -r requirements-ml.txt
 ```
+
+**For GPU training**, that installs a CPU-only Torch. Replace it with a CUDA
+build matching your driver — on an RTX 40-series with a recent driver:
+
+```bash
+pip install --index-url https://download.pytorch.org/whl/cu130     torch torchvision
+```
+
+Verify with `python -c "import torch; print(torch.cuda.is_available())"`. The
+torch wheel is ~1.9 GB; if the download times out, fetch it with
+`curl -C -` (which resumes) and `pip install` the local file.
+
+## Phase 3 — Detection (Unit II)
+
+```bash
+python scripts/fetch_pretrained.py     # once: COCO nano checkpoint
+python scripts/build_dataset.py        # ~2 min: 1965 labelled frames
+python scripts/train_yolo.py           # fine-tune YOLOv8n
+python scripts/evaluate_yolo.py        # per-class metrics
+```
+
+The dataset is split **by mission**, not by frame: validation missions are
+disasters the model has seen no frame of. Splitting frames at random would put
+near-duplicates on both sides and turn mAP into a memorisation score. See
+[`docs/architecture/phase3-detection.md`](docs/architecture/phase3-detection.md).
 
 ## Project Layout
 

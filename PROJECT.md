@@ -231,6 +231,7 @@ sentry/
 │       │   └── app.py              # static preview window
 │       ├── simulation/             # Phase 2 — engine, mission, physics, hazards
 │       │   ├── engine.py
+│       │   ├── factory.py          # composes a mission; shared by every entry point
 │       │   ├── mission.py
 │       │   ├── hazards.py          # fire spread + debris collapse
 │       │   ├── events.py           # bounded mission event log
@@ -244,16 +245,21 @@ sentry/
 │       │   ├── degradation.py      # smoke/blur/noise -> Unit IV training pairs
 │       │   └── rig.py              # SensorRig: CCTV network + onboard camera
 │       ├── perception/             # Phase 3/4 — YOLO + autoencoder adapters
+│       │   └── yolo_detector.py    # YoloDetector implementing IVisionDetector
 │       ├── sequence/                # Phase 5 — LSTM adapter
 │       ├── decision/                 # Phase 6/7 — DQN policy + MLP fusion adapters
 │       ├── training/                  # Phase 3-7 — training pipeline orchestration
+│       │   ├── dataset.py          # builds the YOLO dataset from seeded missions
+│       │   └── yolo.py             # fine-tuning + per-class evaluation
 │       └── app/                        # Phase 9 — Streamlit dashboard
 │
 ├── scripts/                        # composition roots / CLI entry points
 │   ├── run_preview.py              # Phase 1: render static city map
 │   ├── run_simulation.py           # Phase 2: run a live/headless rescue mission
-│   ├── capture_dataset.py          # Phase 2: write the synthetic perception dataset
+│   ├── build_dataset.py            # Phase 3: write the synthetic perception dataset
+│   ├── fetch_pretrained.py         # Phase 3: download transfer-learning checkpoints
 │   ├── train_yolo.py               # Phase 3
+│   ├── evaluate_yolo.py            # Phase 3: per-class detector metrics
 │   ├── train_autoencoder.py        # Phase 4
 │   ├── train_lstm.py               # Phase 5
 │   ├── train_dqn.py                # Phase 6
@@ -656,7 +662,7 @@ sequenceDiagram
 |---|---|---|---|---|
 | 1 | Foundation & Core Architecture | 1-2 | — (infra) | ✅ **Complete** |
 | 2 | Simulation Engine, Occupancy Grid & A* Routing | 3-4 | — (infra) | ✅ **Complete** |
-| 3 | Computer Vision — Detection | 5-6 | Unit II | ⏳ Not started |
+| 3 | Computer Vision — Detection | 5-6 | Unit II | 🚧 3.1 in progress |
 | 4 | Representation Learning — Denoising AE | 7 | Unit IV | ⏳ Not started |
 | 5 | Sequence Modeling — LSTM | 8 | Unit III | ⏳ Not started |
 | 6 | Reinforcement Learning — DQN | 9-11 | Unit V | ⏳ Not started |
