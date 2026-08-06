@@ -190,11 +190,38 @@ epochs, YOLOv8n from COCO, imgsz 256, on an RTX 4060 laptop GPU.
 |---|---|---|---|---|
 | `sentry` | baseline | 0.545 | 1.000 | 0.843 |
 | `noaug` | `mosaic 0.0`, `scale 0.1` | 0.546 | 0.999 | 0.842 |
-| `labelfix` | one annotation per tile, victim outranks debris | *pending* | | |
+| `labelfix` | one annotation per tile, victim outranks debris | **1.000** | 1.000 | **0.991** |
 
 `noaug` is the useful negative: augmentation was not shrinking victims below
 detectability, and knowing that is what forced the per-camera breakdown that
 found the real cause.
+
+Full per-class figures for `labelfix`:
+
+| class | precision | recall | AP50 | AP50-95 |
+|---|---|---|---|---|
+| victim | 1.000 | 1.000 | 0.995 | 0.854 |
+| fire | 0.947 | 0.953 | 0.984 | 0.930 |
+| obstacle | 0.999 | 0.998 | 0.995 | 0.928 |
+
+Overall mAP50 0.9914, mAP50-95 0.9040, against 0.8428 / 0.7792 for the
+baseline. Validation instances fell 3212 to 3128 — exactly the 84 nested
+obstacle labels the fix removed from the split, which is the arithmetic
+closing on the diagnosis.
+
+**What 1.000 does and does not mean.** The city map is fixed and the four
+victims sit at static tiles; only the hazards vary between missions. The
+detector is recognising a distinctive marker at familiar locations, not
+solving a hard vision problem. The defensible claim is that the labelling
+defect is fixed and the detector is no longer the bottleneck — not that the
+detector is strong. A harder test would randomise victim placement, and the
+number would drop.
+
+Fire is now the weakest class at 0.947 precision, down from 0.970 in the
+baseline. It is the only class with a fuzzy boundary — a gradient disc whose
+painted extent scales with intensity — so slightly over-wide boxes are the
+expected failure. Not blocking, and worth revisiting if 3.3 shows the grid
+over-marking fire.
 
 ## Still open
 
