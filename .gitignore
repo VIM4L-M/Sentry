@@ -29,6 +29,9 @@ data/synthetic/**
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
+# Locally downloaded wheels (large, reproducible from an index)
+wheels/
+
 # Training run logs
 runs/
 *.log
