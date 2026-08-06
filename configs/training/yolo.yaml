@@ -1,0 +1,56 @@
+# YOLOv8n fine-tuning for Unit II (Computer Vision).
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_yolo_config().
+# Every key is optional — an omitted key uses the dataclass default in
+# sentry_ai.config.schema.
+
+# Where the dataset lives and where weights are written. Both are
+# git-ignored: the dataset is regenerable from a seed, and weights are
+# build artifacts.
+dataset_dir: "data/synthetic"
+runs_dir: "models/yolo"
+
+# Transfer learning from the COCO-pretrained nano checkpoint, per the
+# specification. Nano because the target machine is a laptop GPU.
+#
+# Pointed at a local file rather than the bare name "yolov8n.pt", which
+# makes Ultralytics fetch it from GitHub on first use. An explicit path
+# means a training run has no hidden network dependency and cannot fail
+# halfway through because a download timed out. Fetch it once with:
+#   python scripts/fetch_pretrained.py
+pretrained_weights: "models/pretrained/yolov8n.pt"
+
+# Inference and training resolution. The CCTV cameras render 256x160, so
+# 256 letterboxes with almost no waste. This MUST match the value passed to
+# YoloDetector at inference, or every box lands in the wrong place.
+image_size: 256
+
+epochs: 60
+batch_size: 16
+patience: 15          # stop early if val mAP stops improving for this many epochs
+
+# Augmentation. Kept modest on purpose: the frames are synthetic and already
+# carry sensor grain, blur, and smoke from the degrader, so piling on more
+# distortion mostly teaches the model to undo augmentation.
+#
+# Flips are the exception worth calling out. The city is viewed from
+# directly overhead, so a horizontally mirrored frame is a perfectly
+# plausible city — the label geometry stays valid and it doubles the
+# effective data for free.
+horizontal_flip: 0.5
+vertical_flip: 0.5
+mosaic: 0.4           # stitches four frames; helps small-object recall
+scale: 0.3
+translate: 0.1
+hsv_value: 0.3        # brightness jitter, standing in for time of day
+
+# Detection thresholds used by YoloDetector at inference. Confidence is
+# deliberately permissive: the command center would rather investigate a
+# false victim than drive past a real one.
+confidence: 0.25
+iou: 0.45
+
+# "cpu", "cuda", or a device index. "auto" picks CUDA when Torch reports it.
+device: "auto"
+
+# Fixed so a training run is reproducible.
+seed: 20250806

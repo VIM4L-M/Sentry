@@ -31,6 +31,7 @@ from sentry_ai.config.schema import (
     SimulationConfig,
     VehicleConfig,
     VictimRiskConfig,
+    YoloTrainingConfig,
 )
 
 _DEFAULT_APP_CONFIG = "configs/app.yaml"
@@ -167,6 +168,42 @@ class ConfigLoader:
                 ),
                 noise_std=_as_float(degradation_data, "noise_std", DegradationConfig.noise_std),
             ),
+        )
+
+    def load_yolo_config(self, relative_path: PathLike) -> YoloTrainingConfig:
+        """Load ``configs/training/yolo.yaml`` into a :class:`YoloTrainingConfig`.
+
+        Same optional-key policy as every other config here. ``dataset_dir``
+        and ``runs_dir`` are resolved against the project root so a training
+        run works from any working directory.
+
+        Raises:
+            AssetNotFoundError: If the file does not exist.
+            ConfigurationError: If a value has the wrong type.
+            ConfigValidationError: If a value is out of range.
+        """
+        data = self.load_yaml(relative_path)
+        defaults = YoloTrainingConfig()
+        return YoloTrainingConfig(
+            dataset_dir=self.resolve(str(data.get("dataset_dir", defaults.dataset_dir))),
+            runs_dir=self.resolve(str(data.get("runs_dir", defaults.runs_dir))),
+            pretrained_weights=self.resolve(
+                str(data.get("pretrained_weights", defaults.pretrained_weights))
+            ),
+            image_size=_as_int(data, "image_size", defaults.image_size),
+            epochs=_as_int(data, "epochs", defaults.epochs),
+            batch_size=_as_int(data, "batch_size", defaults.batch_size),
+            patience=_as_int(data, "patience", defaults.patience),
+            horizontal_flip=_as_float(data, "horizontal_flip", defaults.horizontal_flip),
+            vertical_flip=_as_float(data, "vertical_flip", defaults.vertical_flip),
+            mosaic=_as_float(data, "mosaic", defaults.mosaic),
+            scale=_as_float(data, "scale", defaults.scale),
+            translate=_as_float(data, "translate", defaults.translate),
+            hsv_value=_as_float(data, "hsv_value", defaults.hsv_value),
+            confidence=_as_float(data, "confidence", defaults.confidence),
+            iou=_as_float(data, "iou", defaults.iou),
+            device=str(data.get("device", defaults.device)),
+            seed=_as_int(data, "seed", defaults.seed),
         )
 
     def load_simulation_config(self, relative_path: PathLike) -> SimulationConfig:

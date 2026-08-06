@@ -492,6 +492,86 @@ class SensorConfig:
 
 
 @dataclass(frozen=True)
+class YoloTrainingConfig:
+    """Hyperparameters for fine-tuning YOLOv8n (Unit II).
+
+    Attributes:
+        dataset_dir: Directory holding ``data.yaml`` and the split folders.
+        runs_dir: Where Ultralytics writes weights and training curves.
+        pretrained_weights: Local checkpoint to transfer from, resolved
+            against the project root. A local path rather than a bare name
+            so a training run has no hidden network dependency —
+            ``scripts/fetch_pretrained.py`` puts it there.
+        image_size: Training and inference resolution. The same value must
+            reach ``YoloDetector`` — a mismatch silently misplaces boxes.
+        epochs: Maximum passes over the training split.
+        batch_size: Images per step.
+        patience: Epochs without validation improvement before stopping.
+        horizontal_flip: Probability of mirroring a frame left-to-right.
+        vertical_flip: Probability of mirroring top-to-bottom. Legal here
+            only because the city is viewed from directly overhead, which
+            makes a flipped frame a plausible city rather than an impossible
+            one.
+        mosaic: Probability of stitching four frames into one.
+        scale: Random zoom fraction.
+        translate: Random shift fraction.
+        hsv_value: Brightness jitter fraction.
+        confidence: Minimum detection score at inference.
+        iou: Non-maximum-suppression threshold.
+        device: ``"auto"``, ``"cpu"``, ``"cuda"``, or a device index.
+        seed: Fixed so a run is reproducible.
+    """
+
+    dataset_dir: Path = Path("data/synthetic")
+    runs_dir: Path = Path("models/yolo")
+    pretrained_weights: Path = Path("models/pretrained/yolov8n.pt")
+    image_size: int = 256
+    epochs: int = 60
+    batch_size: int = 16
+    patience: int = 15
+    horizontal_flip: float = 0.5
+    vertical_flip: float = 0.5
+    mosaic: float = 0.4
+    scale: float = 0.3
+    translate: float = 0.1
+    hsv_value: float = 0.3
+    confidence: float = 0.25
+    iou: float = 0.45
+    device: str = "auto"
+    seed: int = 20250806
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("image_size", self.image_size),
+            ("epochs", self.epochs),
+            ("batch_size", self.batch_size),
+        ):
+            if value <= 0:
+                raise ConfigValidationError(f"yolo.{name} must be positive, got {value}")
+        if self.patience < 0:
+            raise ConfigValidationError(f"yolo.patience must be non-negative, got {self.patience}")
+        if self.image_size % 32 != 0:
+            raise ConfigValidationError(
+                f"yolo.image_size must be a multiple of 32 (YOLO's stride), "
+                f"got {self.image_size}"
+            )
+        for name, fraction in (
+            ("horizontal_flip", self.horizontal_flip),
+            ("vertical_flip", self.vertical_flip),
+            ("mosaic", self.mosaic),
+            ("scale", self.scale),
+            ("translate", self.translate),
+            ("hsv_value", self.hsv_value),
+            ("confidence", self.confidence),
+            ("iou", self.iou),
+        ):
+            if not 0.0 <= fraction <= 1.0:
+                raise ConfigValidationError(
+                    f"yolo.{name} must be within 0.0-1.0, got {fraction}"
+                )
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Root application configuration, composing the other config files.
 
