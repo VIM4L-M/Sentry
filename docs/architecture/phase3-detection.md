@@ -47,7 +47,7 @@ A build prints its instance counts. The shipped configuration produces roughly:
 
 | class | instances |
 |---|---|
-| obstacle | 8973 |
+| obstacle | 8655 |
 | fire | 2685 |
 | victim | 744 |
 
@@ -55,6 +55,76 @@ Twelve obstacles per victim. A model that never detected a victim at all would
 still post a respectable overall mAP, which is why `evaluate_yolo.py` reports
 per class and calls out victim recall specifically. Victims are the rarest
 class, the smallest on screen, and the only one the mission actually depends on.
+
+### One tile yields one answer, and a victim outranks the debris pinning them
+
+This one was found by measurement, after three plausible theories turned
+out to be wrong. It is the most useful thing in this document.
+
+The first trained model scored 54.5% victim recall against 99.8% for
+obstacles, with victim *precision* of 1.000. The obvious reading was size:
+a victim marker is 8 px, which is about one cell on YOLOv8's finest
+(stride-8) detection head, while an obstacle is 13 px and about 1.67 cells.
+
+That reading was wrong. Breaking the misses down by camera:
+
+| camera | victims nested inside an obstacle box | victim recall |
+|---|---|---|
+| cctv_ne | 0.000 | 1.000 |
+| cctv_sw | 0.000 | 1.000 |
+| cctv_nw | 1.000 | 0.000 |
+| cctv_se | 1.000 | 0.000 |
+| onboard | 0.632 | 0.368 |
+| **all** | **0.454** | **0.546** |
+
+Recall was exactly one minus the share of victims pinned under debris, to
+three decimals. Missed victims and found victims were both 8.00 px. Two
+cameras scored a perfect 1.000 on the very 8 px targets the size theory
+said were unresolvable.
+
+The cause: a victim trapped in rubble was annotated twice — once as an
+8 px victim, once as the 13 px obstacle box containing it. At twelve
+obstacles to every victim, the detector learned to answer `OBSTACLE` every
+time, and did so at 0.87-0.90 confidence.
+
+That answer is worse than a miss. `OBSTACLE` maps to `OccupancyCode.DEBRIS`,
+which is in `_IMPASSABLE_CODES`. A trapped victim did not merely go
+undetected — they became a wall the planner routed around.
+
+The fix makes the label obey a precedence the domain had already written
+down. From `domain/occupancy.py`:
+
+> Layering order matters — later writes win: terrain, then fires, then
+> victims, then the hospital, then the vehicle. A victim standing in debris
+> must read as `VICTIM` so the planner can route *to* it.
+
+`OccupancyGrid` builds a grid from the true world with that rule. The
+Phase 3 labels contradicted it. Now `_paint_obstacles` still *paints* debris
+under a victim — the rubble is really there, and the victim's smaller marker
+over it leaves a brown ring around a pink core, which is what "trapped in
+rubble" looks like from above — but does not *annotate* it.
+
+Two lessons worth keeping:
+
+* **Per-class metrics were not enough.** "Victim recall 54.5%" pointed at
+  the model. Only slicing by camera showed a bimodal 1.000/0.000 split,
+  which no amount of training would have produced.
+* **Two hypotheses were tested and killed before the real one was found.**
+  Disabling `mosaic` and `scale` moved recall from 0.5448 to 0.5460 — a
+  clean negative that ruled out augmentation. Measuring marker contrast
+  against the clean frames showed victims were the *highest*-contrast class
+  after degradation (84.5 versus 23.3 for obstacles), ruling out smoke.
+
+### Marker sizes are configuration
+
+`sensors.markers` sets how much of a tile each entity fills. These decide
+the pixel size of every training target, so they were the first suspects
+for low victim recall and had to be adjustable without a source edit.
+`configs/sensors_v75.yaml` and `scripts/build_dataset.py --sensors` exist so
+a camera experiment is one command.
+
+They did not turn out to be the answer here, but the measurement they were
+built to support is what ruled size out.
 
 ### Hue and saturation augmentation are switched off
 
@@ -110,13 +180,35 @@ one class's numbers to another the moment a class is absent from validation,
 which on this dataset is entirely possible for victims. `_report_from` handles
 the two differently and `test_yolo_evaluation.py` pins it down.
 
+## Experiment log
+
+Every change to the detector recorded with the number that justified it, so
+the reasoning survives after the weights are regenerated. All runs: 60
+epochs, YOLOv8n from COCO, imgsz 256, on an RTX 4060 laptop GPU.
+
+| run | change | victim recall | victim precision | mAP50 |
+|---|---|---|---|---|
+| `sentry` | baseline | 0.545 | 1.000 | 0.843 |
+| `noaug` | `mosaic 0.0`, `scale 0.1` | 0.546 | 0.999 | 0.842 |
+| `labelfix` | one annotation per tile, victim outranks debris | *pending* | | |
+
+`noaug` is the useful negative: augmentation was not shrinking victims below
+detectability, and knowing that is what forced the per-camera breakdown that
+found the real cause.
+
 ## Still open
 
-- **The production training run.** The pipeline is verified — 3 epochs train and
-  validate in about 7 seconds on CPU — but the real 60-epoch run has not been
-  done yet.
-- **A recall floor worth defending.** `evaluate_yolo.py` uses 60% victim recall
-  as a provisional bar. It is a guess until there are real numbers to argue with.
-- **Phases 3.2-3.5.** Merging detections across the overlapping CCTV footprints,
-  building the occupancy grid from them, and proving a full mission runs on a
-  detector-derived grid without `navigation/` or `simulation/` changing.
+- **A recall floor worth defending.** `evaluate_yolo.py` uses 60% victim
+  recall as a provisional bar. It was set before there were any numbers to
+  argue with, and the baseline's 54.5% turned out to measure a labelling bug
+  rather than the detector, so the floor still has not been tested against a
+  genuine limit.
+- **Mission success is not the same metric as recall.** Recall counts
+  victims per *frame*; a mission only needs each victim found in *one* frame
+  of the many a camera takes while it drives there. The end-to-end number
+  cannot be measured until 3.2 and 3.3 exist, and it should be reported
+  alongside recall rather than instead of it.
+- **Phases 3.2-3.5.** Merging detections across the overlapping CCTV
+  footprints, building the occupancy grid from them, and proving a full
+  mission runs on a detector-derived grid without `navigation/` or
+  `simulation/` changing.

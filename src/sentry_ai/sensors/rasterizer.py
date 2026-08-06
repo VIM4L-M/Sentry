@@ -27,6 +27,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from sentry_ai.common.color import Color
+from sentry_ai.config.schema import MarkerScaleConfig
 from sentry_ai.domain.entities import FireSource, Position
 from sentry_ai.domain.enums import EntityKind, VictimStatus
 from sentry_ai.domain.map import CityMap
@@ -35,15 +36,6 @@ from sentry_ai.interfaces.perception import Detection
 from sentry_ai.sensors.camera import CameraView
 from sentry_ai.sensors.frame import CameraFrame, clipped_box
 from sentry_ai.sensors.palette import SensorPalette
-
-#: Fraction of a tile a victim's marker occupies. Victims are drawn small
-#: because a detector that only ever sees full-tile targets learns nothing
-#: about scale.
-_VICTIM_SCALE = 0.5
-
-#: Fraction of a tile debris and the vehicle occupy.
-_DEBRIS_SCALE = 0.8
-_VEHICLE_SCALE = 0.7
 
 
 class _Placed(Protocol):
@@ -58,13 +50,19 @@ _PlacedT = TypeVar("_PlacedT", bound=_Placed)
 class FrameRasterizer:
     """Renders a :class:`CameraView` of a city into a labelled frame."""
 
-    def __init__(self, palette: SensorPalette) -> None:
+    def __init__(
+        self, palette: SensorPalette, markers: MarkerScaleConfig | None = None
+    ) -> None:
         """Create a rasterizer.
 
         Args:
             palette: Colors and texture strength to paint with.
+            markers: How much of a tile each entity's marker fills. Defaults
+                to :class:`MarkerScaleConfig`'s own defaults, so existing
+                callers that only pass a palette are unaffected.
         """
         self._palette = palette
+        self._markers = markers if markers is not None else MarkerScaleConfig()
         self._textures: dict[str, NDArray[np.int16]] = {}
 
     def render(self, city_map: CityMap, view: CameraView) -> CameraFrame:
@@ -173,14 +171,45 @@ class FrameRasterizer:
     def _paint_obstacles(
         self, canvas: NDArray[np.int16], city_map: CityMap, view: CameraView
     ) -> list[Detection]:
-        """Paint and annotate every discrete obstacle in shot."""
+        """Paint every discrete obstacle in shot, annotating those not holding a victim.
+
+        Debris under a trapped victim is still *painted* — the rubble is
+        physically there, and the victim's smaller marker drawn over it
+        leaves a brown ring around a pink core, which is precisely what
+        "trapped in rubble" looks like from above.
+
+        It is not *annotated*, because one tile yields one answer and a
+        victim outranks the debris pinning them. This is the same precedence
+        :class:`~sentry_ai.domain.occupancy.OccupancyGrid` already applies
+        when it builds a grid from the true world state: a victim standing
+        in debris reads as ``VICTIM`` so the planner can route *to* them.
+
+        Annotating both put the detector in an unwinnable position — a 13 px
+        obstacle box containing an 8 px victim box, at a class balance of
+        twelve obstacles to every victim — and it learned to answer
+        ``OBSTACLE`` every time. That answer is worse than a miss: obstacle
+        is an impassable code, so a trapped victim became a wall the planner
+        routed around. Measured victim recall was exactly the share of
+        victims *not* pinned in rubble.
+        """
+        occupied = self._trapped_victim_tiles(city_map)
         detections: list[Detection] = []
         for obstacle in _visible(city_map.obstacles, view):
             bounds = _fill_marker(
-                canvas, view, obstacle.position, self._palette.debris, _DEBRIS_SCALE
+                canvas, view, obstacle.position, self._palette.debris, self._markers.debris
             )
-            _append_detection(detections, EntityKind.OBSTACLE, bounds, view)
+            if obstacle.position not in occupied:
+                _append_detection(detections, EntityKind.OBSTACLE, bounds, view)
         return detections
+
+    @staticmethod
+    def _trapped_victim_tiles(city_map: CityMap) -> set[Position]:
+        """Tiles holding a victim still awaiting rescue."""
+        return {
+            victim.position
+            for victim in city_map.victims
+            if victim.status is VictimStatus.TRAPPED
+        }
 
     def _paint_victims(
         self, canvas: NDArray[np.int16], city_map: CityMap, view: CameraView
@@ -195,7 +224,7 @@ class FrameRasterizer:
         detections: list[Detection] = []
         for victim in _visible(trapped, view):
             bounds = _fill_marker(
-                canvas, view, victim.position, self._palette.victim, _VICTIM_SCALE
+                canvas, view, victim.position, self._palette.victim, self._markers.victim
             )
             _append_detection(detections, EntityKind.VICTIM, bounds, view)
         return detections
@@ -211,7 +240,11 @@ class FrameRasterizer:
         """
         if view.covers(city_map.vehicle.position):
             _fill_marker(
-                canvas, view, city_map.vehicle.position, self._palette.vehicle, _VEHICLE_SCALE
+                canvas,
+                view,
+                city_map.vehicle.position,
+                self._palette.vehicle,
+                self._markers.vehicle,
             )
 
 

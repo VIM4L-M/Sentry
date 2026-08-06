@@ -17,6 +17,7 @@ from sentry_ai.config.loader import ConfigLoader
 from sentry_ai.config.schema import (
     CameraSpec,
     DegradationConfig,
+    MarkerScaleConfig,
     OnboardCameraConfig,
     SensorConfig,
 )
@@ -97,12 +98,32 @@ class TestSensorConfigValidation:
         with pytest.raises(ConfigValidationError, match="noise_std"):
             DegradationConfig(noise_std=-1.0)
 
+    @pytest.mark.parametrize("field", ["victim", "debris", "vehicle"])
+    @pytest.mark.parametrize("scale", [0.0, -0.5, 1.5])
+    def test_marker_scales_must_be_a_usable_fraction_of_a_tile(
+        self, field: str, scale: float
+    ) -> None:
+        """Zero would paint nothing; over one would bleed into the next tile."""
+        with pytest.raises(ConfigValidationError, match=f"markers.{field}"):
+            MarkerScaleConfig(**{field: scale})
+
+    def test_a_full_tile_marker_is_allowed(self) -> None:
+        assert MarkerScaleConfig(victim=1.0).victim == pytest.approx(1.0)
+
 
 class TestLoadingSensorConfig:
     def test_a_minimal_file_uses_dataclass_defaults(self, tmp_path: Path) -> None:
         config = _write(tmp_path, _MINIMAL).load_sensor_config("sensors.yaml")
         assert config.onboard == OnboardCameraConfig()
         assert config.degradation == DegradationConfig()
+        assert config.markers == MarkerScaleConfig()
+
+    def test_marker_scales_are_read_from_the_file(self, tmp_path: Path) -> None:
+        data = dict(_MINIMAL)
+        data["markers"] = {"victim": 0.75}
+        config = _write(tmp_path, data).load_sensor_config("sensors.yaml")
+        assert config.markers.victim == pytest.approx(0.75)
+        assert config.markers.debris == pytest.approx(MarkerScaleConfig.debris)
 
     def test_cameras_are_parsed_in_order(self, tmp_path: Path) -> None:
         data = dict(_MINIMAL)

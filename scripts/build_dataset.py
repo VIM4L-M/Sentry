@@ -19,6 +19,7 @@ Usage:
     python scripts/build_dataset.py
     python scripts/build_dataset.py --train-missions 20 --val-missions 5
     python scripts/build_dataset.py --output data/tiny --train-missions 2 --val-missions 1
+    python scripts/build_dataset.py --sensors configs/sensors_v75.yaml --output data/v75
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ def main() -> int:
     app_config = loader.load_app_config(args.config)
     setup_logging(app_config.logging_config_path)
 
-    sensor_path = _require_sensor_config(app_config)
+    sensor_path = _resolve_sensor_config(app_config, loader, args.sensors)
     sensor_config = loader.load_sensor_config(sensor_path)
     rig = SensorRig.from_config(sensor_config, SensorPalette.from_config(loader, sensor_path))
 
@@ -114,8 +115,18 @@ def _load_mission_configs(loader: ConfigLoader, app_config: AppConfig) -> tuple:
     )
 
 
-def _require_sensor_config(app_config: AppConfig) -> Path:
-    """The sensors config path, or a clear error if the app config omits it."""
+def _resolve_sensor_config(
+    app_config: AppConfig, loader: ConfigLoader, override: str | None
+) -> Path:
+    """Which sensors file to capture through.
+
+    An override exists so a camera experiment — a different marker size, a
+    different ``tile_size_px`` — is one command against one extra YAML file,
+    rather than an edit to the shipped config that every other run then
+    silently inherits.
+    """
+    if override is not None:
+        return loader.resolve(override)
     if app_config.sensor_config_path is None:
         raise ConfigurationError("app config must set 'sensor_config' to capture frames")
     return app_config.sensor_config_path
@@ -140,6 +151,13 @@ def _parse_args() -> argparse.Namespace:
         "--output",
         default="data/synthetic",
         help="Directory to write the dataset into (default: data/synthetic).",
+    )
+    parser.add_argument(
+        "--sensors",
+        help=(
+            "Override the sensors config the app config points at, for camera "
+            "experiments (marker size, tile_size_px). Default: whatever app.yaml names."
+        ),
     )
     parser.add_argument(
         "--train-missions",

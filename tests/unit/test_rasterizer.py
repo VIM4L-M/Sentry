@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from sentry_ai.common.color import Color
+from sentry_ai.config.schema import MarkerScaleConfig
 from sentry_ai.domain.entities import Obstacle, Position
 from sentry_ai.domain.enums import EntityKind, TerrainType, VictimStatus
 from sentry_ai.domain.map import CityMap
@@ -189,6 +190,72 @@ class TestObstacleLabels:
         assert len(_labels(_render(city_map), EntityKind.OBSTACLE)) == before + 1
 
 
+class TestVictimInRubble:
+    """A victim pinned under debris is one tile with one answer: VICTIM.
+
+    Annotating both left the detector an unwinnable choice — a 13 px
+    obstacle box containing an 8 px victim box, twelve obstacles to every
+    victim — and it always answered OBSTACLE, which is an impassable code.
+    A trapped victim became a wall the planner routed around. Measured
+    victim recall was precisely the share of victims *not* pinned in
+    rubble, so these tests guard a real regression rather than a theory.
+    """
+
+    def _pinned(self, city_map: CityMap) -> CityMap:
+        """Bury the victim at (4, 2) under debris."""
+        city_map.terrain[Position(4, 2)] = TerrainType.RUBBLE
+        city_map.obstacles.append(
+            Obstacle(obstacle_id="rubble", position=Position(4, 2), kind=TerrainType.RUBBLE)
+        )
+        return city_map
+
+    def test_the_victim_is_still_labelled(self, city_map: CityMap) -> None:
+        frame = _render(self._pinned(city_map))
+        victims = _labels(frame, EntityKind.VICTIM)
+        assert len(victims) == 1
+        assert frame.world_position_of(victims[0]) == Position(4, 2)
+
+    def test_the_debris_under_them_is_not_labelled(self, city_map: CityMap) -> None:
+        frame = _render(self._pinned(city_map))
+        positions = [frame.world_position_of(o) for o in _labels(frame, EntityKind.OBSTACLE)]
+        assert Position(4, 2) not in positions
+
+    def test_debris_elsewhere_is_still_labelled(self, city_map: CityMap) -> None:
+        """Only the victim's own tile is affected."""
+        frame = _render(self._pinned(city_map))
+        positions = [frame.world_position_of(o) for o in _labels(frame, EntityKind.OBSTACLE)]
+        assert Position(5, 3) in positions
+
+    def test_the_debris_is_still_painted(self, city_map: CityMap) -> None:
+        """The rubble is physically there; a brown ring around a pink core
+        is what 'trapped in rubble' looks like from above."""
+        frame = _render(self._pinned(city_map))
+        # Tile (4, 2) -> pixels x 32..40, y 16..24. Debris fills 0.8 of it,
+        # the victim only 0.5, so the ring between them stays debris.
+        assert tuple(frame.pixels[17, 33]) == _DEBRIS.as_tuple()
+        assert tuple(frame.pixels[20, 36]) == _VICTIM.as_tuple()
+
+    def test_no_victim_box_is_nested_inside_an_obstacle_box(self, city_map: CityMap) -> None:
+        """The exact condition that cost 45.4% of victim recall."""
+        frame = _render(self._pinned(city_map))
+        obstacles = [o.bbox for o in _labels(frame, EntityKind.OBSTACLE)]
+        for victim in _labels(frame, EntityKind.VICTIM):
+            centre_x = (victim.bbox.x_min + victim.bbox.x_max) / 2
+            centre_y = (victim.bbox.y_min + victim.bbox.y_max) / 2
+            assert not any(
+                box.x_min <= centre_x <= box.x_max and box.y_min <= centre_y <= box.y_max
+                for box in obstacles
+            )
+
+    def test_a_rescued_victim_frees_the_debris_label(self, city_map: CityMap) -> None:
+        """Precedence lasts exactly as long as someone is trapped there."""
+        pinned = self._pinned(city_map)
+        pinned.victims[0].status = VictimStatus.RESCUED
+        frame = _render(pinned)
+        positions = [frame.world_position_of(o) for o in _labels(frame, EntityKind.OBSTACLE)]
+        assert Position(4, 2) in positions
+
+
 class TestVehiclePainting:
     def test_the_vehicle_is_painted(self, city_map: CityMap) -> None:
         frame = _render(city_map)
@@ -240,3 +307,36 @@ class TestTextureAndDeterminism:
         before = _render(city_map, jitter=10).pixels.copy()
         city_map.victims[0].status = VictimStatus.RESCUED
         assert not np.array_equal(before, _render(city_map, jitter=10).pixels)
+
+
+class TestMarkerScales:
+    """Marker size is the project's main control over small-object recall.
+
+    A victim is the smallest annotated class and sits near the resolution
+    floor of YOLOv8's finest detection head, so these pin down that the
+    configured fraction really does reach the pixels — an experiment that
+    silently ignored its own setting would be worse than no experiment.
+    """
+
+    def _victim_size(self, city_map: CityMap, scale: float) -> tuple[int, int]:
+        rasterizer = FrameRasterizer(_palette(), markers=MarkerScaleConfig(victim=scale))
+        frame = rasterizer.render(city_map, _full_view(tile_size_px=16))
+        box = _labels(frame, EntityKind.VICTIM)[0].bbox
+        return (box.x_max - box.x_min, box.y_max - box.y_min)
+
+    def test_the_default_victim_fills_half_its_tile(self, city_map: CityMap) -> None:
+        assert self._victim_size(city_map, MarkerScaleConfig.victim) == (8, 8)
+
+    def test_a_larger_scale_paints_a_larger_victim(self, city_map: CityMap) -> None:
+        assert self._victim_size(city_map, 0.75) == (12, 12)
+
+    def test_the_label_matches_the_painted_pixels(self, city_map: CityMap) -> None:
+        """Ground truth must describe what was actually drawn, at any scale."""
+        rasterizer = FrameRasterizer(_palette(), markers=MarkerScaleConfig(victim=0.75))
+        frame = rasterizer.render(city_map, _full_view(tile_size_px=16))
+        box = _labels(frame, EntityKind.VICTIM)[0].bbox
+
+        painted = np.all(frame.pixels == np.array(_VICTIM.as_tuple()), axis=-1)
+        rows, cols = np.nonzero(painted)
+        assert (cols.min(), cols.max() + 1) == (box.x_min, box.x_max)
+        assert (rows.min(), rows.max() + 1) == (box.y_min, box.y_max)

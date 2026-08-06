@@ -23,6 +23,7 @@ from sentry_ai.config.schema import (
     DegradationConfig,
     FireSpreadConfig,
     HazardConfig,
+    MarkerScaleConfig,
     MissionConfig,
     OnboardCameraConfig,
     PlannerConfig,
@@ -146,6 +147,7 @@ class ConfigLoader:
         """
         data = self.load_yaml(relative_path)
         onboard_data = _require_mapping(data.get("onboard", {}), "sensors.onboard")
+        marker_data = _require_mapping(data.get("markers", {}), "sensors.markers")
         degradation_data = _require_mapping(data.get("degradation", {}), "sensors.degradation")
 
         return SensorConfig(
@@ -157,6 +159,11 @@ class ConfigLoader:
                 tile_size_px=_as_int(
                     onboard_data, "tile_size_px", OnboardCameraConfig.tile_size_px
                 ),
+            ),
+            markers=MarkerScaleConfig(
+                victim=_as_float(marker_data, "victim", MarkerScaleConfig.victim),
+                debris=_as_float(marker_data, "debris", MarkerScaleConfig.debris),
+                vehicle=_as_float(marker_data, "vehicle", MarkerScaleConfig.vehicle),
             ),
             degradation=DegradationConfig(
                 smoke_density=_as_float(

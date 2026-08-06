@@ -76,7 +76,8 @@ class SensorRig:
             span_tiles=config.onboard.span_tiles,
             tile_size_px=config.onboard.tile_size_px,
         )
-        return cls(cctv_views=views, onboard=onboard, rasterizer=FrameRasterizer(palette))
+        rasterizer = FrameRasterizer(palette, markers=config.markers)
+        return cls(cctv_views=views, onboard=onboard, rasterizer=rasterizer)
 
     @property
     def cctv_views(self) -> tuple[CameraView, ...]:

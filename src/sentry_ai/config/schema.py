@@ -428,6 +428,41 @@ class OnboardCameraConfig:
 
 
 @dataclass(frozen=True)
+class MarkerScaleConfig:
+    """How much of its tile each annotated entity's marker fills.
+
+    These decide the pixel size of every training target, so they are the
+    single most important control over small-object recall. At the default
+    ``tile_size_px`` of 16 a victim is 8 px across, which lands on roughly
+    one cell of YOLOv8's finest (stride-8) detection head — the resolution
+    floor of the architecture. Debris, at 0.8, is half again as wide and is
+    detected almost perfectly. That gap is why these live in config: it
+    makes marker size an experiment rather than a source edit.
+
+    Attributes:
+        victim: Fraction of a tile a victim's marker occupies.
+        debris: Fraction of a tile a piece of debris occupies.
+        vehicle: Fraction of a tile the ego vehicle occupies. Not annotated,
+            but drawn, so the detector has seen it.
+    """
+
+    victim: float = 0.5
+    debris: float = 0.8
+    vehicle: float = 0.7
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("victim", self.victim),
+            ("debris", self.debris),
+            ("vehicle", self.vehicle),
+        ):
+            if not 0.0 < value <= 1.0:
+                raise ConfigValidationError(
+                    f"sensors.markers.{name} must be within 0.0 (exclusive) to 1.0, got {value}"
+                )
+
+
+@dataclass(frozen=True)
 class DegradationConfig:
     """How badly a camera frame is corrupted before the denoiser sees it.
 
@@ -474,12 +509,14 @@ class SensorConfig:
         tile_size_px: Pixels per tile for the fixed CCTV cameras.
         cameras: Fixed camera footprints, in capture order.
         onboard: The vehicle-mounted camera.
+        markers: How much of a tile each annotated entity fills.
         degradation: Smoke/blur/noise model applied to captured frames.
     """
 
     tile_size_px: int = 16
     cameras: tuple[CameraSpec, ...] = ()
     onboard: OnboardCameraConfig = field(default_factory=OnboardCameraConfig)
+    markers: MarkerScaleConfig = field(default_factory=MarkerScaleConfig)
     degradation: DegradationConfig = field(default_factory=DegradationConfig)
 
     def __post_init__(self) -> None:

@@ -126,8 +126,27 @@ python scripts/evaluate_yolo.py        # per-class metrics
 
 The dataset is split **by mission**, not by frame: validation missions are
 disasters the model has seen no frame of. Splitting frames at random would put
-near-duplicates on both sides and turn mAP into a memorisation score. See
-[`docs/architecture/phase3-detection.md`](docs/architecture/phase3-detection.md).
+near-duplicates on both sides and turn mAP into a memorisation score.
+
+**One tile yields one annotation, and a victim outranks the debris pinning
+them.** A victim trapped in rubble is still *painted* over the debris — a brown
+ring around a pink core — but only the victim is labelled. Annotating both left
+the detector choosing between a 13 px obstacle box and the 8 px victim box
+inside it, at twelve obstacles to every victim; it answered `OBSTACLE` every
+time, which is an impassable code, so a trapped victim became a wall the planner
+routed around. This is the same precedence `OccupancyGrid` already applies to the
+true world state. Measured victim recall was exactly the share of victims *not*
+pinned in rubble.
+
+To run a camera experiment without touching the shipped config, point the builder
+at another sensors file — marker sizes live in `sensors.markers`:
+
+```bash
+python scripts/build_dataset.py --sensors configs/sensors_v75.yaml --output data/v75
+```
+
+The experiment log, including the hypotheses that were measured and rejected, is
+in [`docs/architecture/phase3-detection.md`](docs/architecture/phase3-detection.md).
 
 ## Project Layout
 

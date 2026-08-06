@@ -1,3 +1,24 @@
+# EXPERIMENT B — victim marker enlarged, camera untouched.
+#
+# Identical to configs/sensors.yaml in every respect except markers.victim,
+# which goes 0.5 -> 0.75. At tile_size_px 16 that paints a victim at 12 px
+# instead of 8 px — the same size as debris, which the detector already
+# finds 99.8% of the time.
+#
+# The point is to separate two explanations for 54.5% victim recall that
+# raising tile_size_px would confound:
+#
+#   object size      an 8 px target is ~1 cell on the stride-8 head
+#   sensor resolution  a 256x160 frame may simply carry too little signal
+#
+# Holding the camera fixed and changing only the target answers the first
+# question on its own. If recall jumps here, the fix is resolution of the
+# *object*; if it does not, the fix is resolution of the *sensor* and
+# Experiment C (tile_size_px 32, image_size 512) is the real answer.
+#
+# Build against it with:
+#   python scripts/build_dataset.py --sensors configs/sensors_v75.yaml --output data/v75
+#
 # Camera network for the disaster city.
 #
 # Two readers share this file, each owning one section:
@@ -54,7 +75,7 @@ onboard:
 # These live here rather than in the rasterizer so marker size is an
 # experiment, not a source edit. See docs/architecture/phase3-detection.md.
 markers:
-  victim: 0.5
+  victim: 0.75   # EXPERIMENT B: 0.5 in the shipped config -> 12 px, matching debris
   debris: 0.8
   vehicle: 0.7
 

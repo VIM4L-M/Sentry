@@ -59,6 +59,12 @@ def _apply_overrides(
         config = replace(config, batch_size=args.batch_size)
     if args.device is not None:
         config = replace(config, device=args.device)
+    if args.image_size is not None:
+        config = replace(config, image_size=args.image_size)
+    if args.mosaic is not None:
+        config = replace(config, mosaic=args.mosaic)
+    if args.scale is not None:
+        config = replace(config, scale=args.scale)
     if args.dataset is not None:
         config = replace(config, dataset_dir=loader.resolve(args.dataset))
     return config
@@ -83,6 +89,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, help="Override the configured epoch count.")
     parser.add_argument("--batch-size", type=int, help="Override the configured batch size.")
     parser.add_argument("--device", help='Override the device ("cpu", "cuda", or an index).')
+    parser.add_argument(
+        "--image-size", type=int, help="Override the training resolution (multiple of 32)."
+    )
+    parser.add_argument(
+        "--mosaic", type=float, help="Override mosaic probability (0.0 disables it)."
+    )
+    parser.add_argument("--scale", type=float, help="Override the random-zoom fraction.")
     parser.add_argument("--dataset", help="Override the dataset directory.")
     return parser.parse_args()
 
