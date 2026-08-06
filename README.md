@@ -145,8 +145,18 @@ at another sensors file — marker sizes live in `sensors.markers`:
 python scripts/build_dataset.py --sensors configs/sensors_v75.yaml --output data/v75
 ```
 
-The experiment log, including the hypotheses that were measured and rejected, is
-in [`docs/architecture/phase3-detection.md`](docs/architecture/phase3-detection.md).
+Final detector: victim recall **1.000**, mAP50 **0.991**. The experiment log,
+including the hypotheses that were measured and rejected, is in
+[`docs/architecture/phase3-detection.md`](docs/architecture/phase3-detection.md).
+
+**3.2 — merging across cameras.** `DetectionMerger` turns per-camera detections
+into one world-space belief, so a victim seen by two overlapping cameras is one
+victim. Detections project to the *footprint* of tiles their box covers, not a
+centre tile, because a fire straddling a camera seam is clipped differently by
+each camera and only its footprints meet. The merge rule is asymmetric on
+purpose: fire merges on adjacency as well as overlap, victims and debris merge
+only on overlap — over-merging a hazard costs nothing, over-merging victims
+erases a person.
 
 ## Project Layout
 
@@ -158,6 +168,7 @@ src/sentry_ai/
   domain/      Entities, enums, CityMap, OccupancyGrid — pure Python, no frameworks
   interfaces/  Ports (ABCs): perception, sequence, navigation, world, decision fusion
   navigation/  A* global route planner (classical, not learned)
+  perception/  YOLO detector adapter + cross-camera detection merger
   simulation/  Tick engine, mission state machine, vehicle physics, hazards
   sensors/     Synthetic cameras: rasterizer, ground-truth labels, frame degradation
   rendering/   Pygame map renderer, HUD, keyboard input, mission window

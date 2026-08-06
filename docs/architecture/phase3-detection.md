@@ -180,6 +180,69 @@ one class's numbers to another the moment a class is absent from validation,
 which on this dataset is entirely possible for victims. `_report_from` handles
 the two differently and `test_yolo_evaluation.py` pins it down.
 
+## 3.2 — merging across cameras
+
+`DetectionMerger` takes what each camera reported and answers one question:
+*are these two boxes the same object seen twice, or two objects?* It never
+touches pixels, never loads a model, and never builds a grid, so it can be
+tested with hand-built detections and no Torch in sight.
+
+### Footprints, not centres
+
+A detection projects to the set of world tiles its box covers
+(`CameraView.tiles_of_box`), not to a single centre tile.
+
+Centres would be enough for victims and debris — both are painted inside one
+tile, so two cameras seeing one victim agree on that tile. They are wrong for
+fire. A fire is annotated across its whole visible disc, and a blaze
+straddling a camera seam is *clipped differently by each camera*: the two
+views' box centres land on different tiles, while their footprints meet at
+the seam. Centre-matching would report one fire as two.
+
+The footprint is also what 3.3 needs. A grid builder must mark every burning
+cell, not the one under the centre of the box.
+
+### The merge rule is asymmetric between people and hazards
+
+Two sightings merge when they share a label and their footprints meet. What
+"meet" means depends on the class, and the asymmetry is deliberate:
+
+| class | merges on | why |
+|---|---|---|
+| victim, obstacle | overlap only | two victims on neighbouring tiles are two people; merging them erases one |
+| fire | overlap **or** edge adjacency | one blaze clipped by a camera seam becomes two disjoint halves that touch |
+
+Over-merging fire costs nothing — adjacent burning tiles are one impassable
+region to the planner either way. Over-merging victims loses a person, which
+is the worst error this system can make. So hazards merge greedily and people
+do not.
+
+This is not configurable. It follows from what the classes mean, not from a
+threshold worth tuning.
+
+Grouping is transitive: if A meets B and B meets C, all three are one object
+even when A and C do not touch. That is what a fire spanning three camera
+footprints looks like.
+
+### Confidence is the best view, not the average
+
+A merged detection carries the highest confidence of its contributing
+sightings, and the set of `camera_ids` that saw it. A camera with a clear
+line of sight should not be dragged down by one looking through smoke, and
+`corroborated` lets downstream code tell a two-camera confirmation from a
+lone sighting.
+
+### Tested against the real rig with a perfect detector
+
+`tests/integration/test_detection_merge_pipeline.py` runs the merger over the
+actual four-camera network from `configs/sensors.yaml` and the actual city,
+feeding the rasterizer's *ground-truth* annotations in place of a model's
+predictions.
+
+That substitution isolates the step. If a victim standing in the two-tile
+overlap comes back as two victims there, the fault is in the merging, because
+a perfect detector is exactly what is being fed in.
+
 ## Experiment log
 
 Every change to the detector recorded with the number that justified it, so
@@ -235,7 +298,12 @@ over-marking fire.
   of the many a camera takes while it drives there. The end-to-end number
   cannot be measured until 3.2 and 3.3 exist, and it should be reported
   alongside recall rather than instead of it.
-- **Phases 3.2-3.5.** Merging detections across the overlapping CCTV
-  footprints, building the occupancy grid from them, and proving a full
-  mission runs on a detector-derived grid without `navigation/` or
-  `simulation/` changing.
+- **Phases 3.3-3.5.** Building the occupancy grid from merged detections,
+  and proving a full mission runs on a detector-derived grid without
+  `navigation/` or `simulation/` changing.
+- **The merger has never seen a real detector's output.** It is tested with
+  ground-truth boxes, which are exact. Real boxes are a pixel or two off, and
+  a victim box that drifts across a tile boundary would project to two tiles
+  instead of one. That still merges correctly — the footprints overlap — but
+  the failure modes deserve a run against `labelfix` weights once 3.3 gives
+  something to measure the grid against.

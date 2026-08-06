@@ -6,6 +6,7 @@ import pytest
 
 from sentry_ai.common.exceptions import ConfigValidationError
 from sentry_ai.domain.entities import Position, Vehicle
+from sentry_ai.interfaces.perception import BoundingBox
 from sentry_ai.sensors.camera import CameraView, OnboardCamera
 
 
@@ -83,6 +84,52 @@ class TestProjectionBackToTheMap:
     def test_pixels_outside_the_frame_are_rejected(self, x: int, y: int) -> None:
         with pytest.raises(ConfigValidationError, match="outside camera"):
             _view().to_world(x, y)
+
+
+class TestProjectingABox:
+    """tiles_of_box is what Phase 3.2 merges on.
+
+    The footprint matters, not just the centre: a fire is annotated across
+    its whole visible disc and is clipped differently by each camera that
+    sees it, so two views of one fire agree on tiles that touch even when
+    their box centres do not.
+    """
+
+    def test_a_box_inside_one_tile_yields_that_tile(self) -> None:
+        # Tile (6, 3) occupies pixels x 20..30, y 10..20.
+        assert _view().tiles_of_box(BoundingBox(22, 12, 28, 18)) == {Position(6, 3)}
+
+    def test_a_box_spanning_tiles_yields_all_of_them(self) -> None:
+        assert _view().tiles_of_box(BoundingBox(20, 10, 40, 20)) == {
+            Position(6, 3),
+            Position(7, 3),
+        }
+
+    def test_a_box_covering_the_frame_yields_every_tile(self) -> None:
+        view = _view()
+        assert view.tiles_of_box(BoundingBox(0, 0, 50, 30)) == set(view.world_tiles())
+
+    def test_the_exclusive_maximum_does_not_leak_into_the_next_tile(self) -> None:
+        """A box ending exactly on a boundary stops at the tile before it."""
+        assert _view().tiles_of_box(BoundingBox(20, 10, 30, 20)) == {Position(6, 3)}
+
+    def test_a_box_overhanging_the_frame_is_clamped(self) -> None:
+        """A detector predicting past the edge cannot invent unseen tiles."""
+        view = _view()
+        tiles = view.tiles_of_box(BoundingBox(40, 20, 999, 999))
+        assert tiles == {Position(8, 4)}
+        assert all(view.covers(tile) for tile in tiles)
+
+    def test_every_returned_tile_is_one_this_camera_sees(self) -> None:
+        view = _view()
+        assert all(view.covers(tile) for tile in view.tiles_of_box(BoundingBox(0, 0, 50, 30)))
+
+    def test_the_result_agrees_with_to_world_at_the_corners(self) -> None:
+        view = _view()
+        box = BoundingBox(21, 11, 39, 19)
+        tiles = view.tiles_of_box(box)
+        assert view.to_world(box.x_min, box.y_min) in tiles
+        assert view.to_world(box.x_max - 1, box.y_max - 1) in tiles
 
 
 class TestOnboardCamera:

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from sentry_ai.common.exceptions import ConfigValidationError
 from sentry_ai.domain.entities import Position, Vehicle
+from sentry_ai.interfaces.perception import BoundingBox
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,31 @@ class CameraView:
             for dy in range(self.height_tiles)
             for dx in range(self.width_tiles)
         ]
+
+    def tiles_of_box(self, box: BoundingBox) -> frozenset[Position]:
+        """Every world tile a detection's pixel box covers.
+
+        The footprint, not just the centre. A victim or a debris marker sits
+        inside a single tile either way, but a fire is annotated across its
+        whole visible disc, and two cameras that each see part of one fire
+        clip it differently — their box *centres* land on different tiles
+        while their *footprints* meet at the seam. Merging needs the
+        footprint to recognise those as one fire, and the occupancy grid
+        built from the result needs it to mark every burning tile, not one.
+
+        The box is clamped to the frame first, so a detector that predicts
+        slightly outside the image cannot invent tiles this camera never saw.
+        """
+        x_min = max(0, min(box.x_min, self.frame_width - 1))
+        y_min = max(0, min(box.y_min, self.frame_height - 1))
+        # x_max/y_max are exclusive; step back one pixel to the last one inside.
+        x_max = max(x_min, min(box.x_max - 1, self.frame_width - 1))
+        y_max = max(y_min, min(box.y_max - 1, self.frame_height - 1))
+        return frozenset(
+            Position(self.origin.x + tile_x, self.origin.y + tile_y)
+            for tile_y in range(y_min // self.tile_size_px, y_max // self.tile_size_px + 1)
+            for tile_x in range(x_min // self.tile_size_px, x_max // self.tile_size_px + 1)
+        )
 
 
 @dataclass(frozen=True)
