@@ -247,3 +247,113 @@ class TestConfidenceFiltering:
     ) -> None:
         with pytest.raises(ValueError, match="min_confidence"):
             OccupancyGridBuilder(terrain=builder.terrain, min_confidence=threshold)
+
+
+class TestFireIsReadBackAsADisc:
+    """A fire box is a rectangle; a fire is a disc.
+
+    Marking the whole rectangle adds a ring of impassable corner tiles.
+    Measured on the shipped map that doubled the believed footprint and
+    walled off streets that were open — two victims lost, mission failed.
+    The builder reads a square footprint back through ``tiles_within``, the
+    same function that drew the fire in the first place, so this is not a
+    guess about shape. It only ever *removes* tiles, and it declines to act
+    wherever the reconstruction would not be exact.
+    """
+
+    @pytest.fixture
+    def wide(self) -> OccupancyGridBuilder:
+        """A big empty map, so a fire is nowhere near the border."""
+        return OccupancyGridBuilder(terrain=OccupancyGrid.empty(21, 21))
+
+    @staticmethod
+    def _square(centre: tuple[int, int], radius: int) -> WorldDetection:
+        cx, cy = centre
+        return _found(
+            EntityKind.FIRE,
+            *[
+                (x, y)
+                for y in range(cy - radius, cy + radius + 1)
+                for x in range(cx - radius, cx + radius + 1)
+            ],
+        )
+
+    def test_the_corners_of_a_fire_box_are_dropped(
+        self, wide: OccupancyGridBuilder
+    ) -> None:
+        grid = wide.build([self._square((10, 10), 2)])
+        burning = set(grid.positions_with(OccupancyCode.FIRE))
+        assert Position(8, 8) not in burning, "a bounding-box corner is not on fire"
+        assert Position(10, 8) in burning, "the disc's edge is"
+
+    def test_the_result_matches_what_mark_radius_would_have_drawn(
+        self, wide: OccupancyGridBuilder
+    ) -> None:
+        """Exactness, not approximation — the same rule read backwards."""
+        expected = OccupancyGrid.empty(21, 21)
+        expected.mark_radius(Position(10, 10), 2, OccupancyCode.FIRE)
+
+        grid = wide.build([self._square((10, 10), 2)])
+        assert set(grid.positions_with(OccupancyCode.FIRE)) == set(
+            expected.positions_with(OccupancyCode.FIRE)
+        )
+
+    @pytest.mark.parametrize("radius", [1, 2, 3, 4])
+    def test_it_holds_at_every_radius(
+        self, wide: OccupancyGridBuilder, radius: int
+    ) -> None:
+        expected = OccupancyGrid.empty(21, 21)
+        expected.mark_radius(Position(10, 10), radius, OccupancyCode.FIRE)
+        grid = wide.build([self._square((10, 10), radius)])
+        assert set(grid.positions_with(OccupancyCode.FIRE)) == set(
+            expected.positions_with(OccupancyCode.FIRE)
+        )
+
+    def test_it_never_invents_a_tile(self, wide: OccupancyGridBuilder) -> None:
+        """Intersection only — the safe direction is over-marking, not under."""
+        found = self._square((10, 10), 3)
+        grid = wide.build([found])
+        assert set(grid.positions_with(OccupancyCode.FIRE)) <= found.tiles
+
+    def test_a_footprint_touching_the_map_edge_is_left_alone(
+        self, wide: OccupancyGridBuilder
+    ) -> None:
+        """A truncated disc has no recoverable centre, so nothing is trimmed."""
+        found = self._square((2, 2), 2)
+        grid = wide.build([found])
+        assert set(grid.positions_with(OccupancyCode.FIRE)) == found.tiles
+
+    def test_a_non_square_footprint_is_left_alone(
+        self, wide: OccupancyGridBuilder
+    ) -> None:
+        """Two merged fires, or one clipped at a seam — shape is unknown."""
+        found = _found(EntityKind.FIRE, *[(x, 10) for x in range(8, 14)])
+        grid = wide.build([found])
+        assert set(grid.positions_with(OccupancyCode.FIRE)) == found.tiles
+
+    def test_an_even_sided_footprint_is_left_alone(
+        self, wide: OccupancyGridBuilder
+    ) -> None:
+        """A disc spans an odd 2r+1 tiles; an even span has no centre tile."""
+        found = _found(
+            EntityKind.FIRE,
+            *[(x, y) for y in range(9, 13) for x in range(9, 13)],
+        )
+        grid = wide.build([found])
+        assert set(grid.positions_with(OccupancyCode.FIRE)) == found.tiles
+
+    def test_a_single_tile_fire_is_unchanged(self, wide: OccupancyGridBuilder) -> None:
+        grid = wide.build([_found(EntityKind.FIRE, (10, 10))])
+        assert grid.positions_with(OccupancyCode.FIRE) == [Position(10, 10)]
+
+    @pytest.mark.parametrize("kind", [EntityKind.VICTIM, EntityKind.OBSTACLE])
+    def test_only_fire_is_reshaped(
+        self, wide: OccupancyGridBuilder, kind: EntityKind
+    ) -> None:
+        """Victims and debris fill one tile — a box and its contents agree."""
+        found = _found(
+            kind, *[(x, y) for y in range(8, 13) for x in range(8, 13)]
+        )
+        grid = wide.build([found])
+        code = DETECTION_TO_OCCUPANCY[kind]
+        assert set(grid.positions_with(code)) == found.tiles

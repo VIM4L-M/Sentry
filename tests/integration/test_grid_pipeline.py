@@ -12,14 +12,17 @@ defect in the projection, the merge, or the precedence rules** — never in
 the weights. Scoring the real detector is a separate exercise with its own
 script (``scripts/evaluate_grid.py``).
 
-One structural disagreement survives a perfect detector, and
-:class:`TestFireIsOverMarkedNotUnderMarked` is where it is pinned down.
+With a perfect detector the pipeline is now *lossless*: the grid it builds
+is identical to the one ``from_city_map`` produces, cell for cell. That was
+not true when 3.3 was first written — fire's bounding box doubled its
+footprint — and the tests below are largely the record of closing that gap.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from sentry_ai.config.loader import ConfigLoader
@@ -108,32 +111,36 @@ class TestAPerfectDetectorRecoversThePeople:
         assert comparison.scores[OccupancyCode.VEHICLE].iou == 1.0
 
 
-class TestFireIsOverMarkedNotUnderMarked:
-    """The one disagreement a perfect detector cannot remove.
+class TestFireFootprintIsRecoveredExactly:
+    """Fire is the class a bounding box describes worst, and it is now exact.
 
     Ground truth stamps a fire as a Euclidean *disc*
-    (``OccupancyGrid.mark_radius``). A camera reports an axis-aligned
-    *box*, and a disc's bounding box includes its corners — so the belief
-    marks a ring of tiles that are not actually burning.
+    (``OccupancyGrid.mark_radius``); a camera reports an axis-aligned box.
+    Marking the whole box doubled the believed footprint, and because those
+    invented tiles are impassable it walled off open streets — measured, it
+    cost two victims and failed a mission.
 
-    This is information loss inherent to bounding boxes, not a bug, and it
-    errs in the safe direction: the belief never under-states a fire. The
-    builder deliberately does not try to re-inscribe a disc, because
-    guessing a radius wrong would convert a harmless detour into a vehicle
-    driving into a fire.
+    Two changes recover the disc, and both are asymmetric on purpose:
+    fire projects by tile *centre* rather than any pixel overlap, and the
+    builder reads a square footprint back through the same ``tiles_within``
+    that drew it. Victims are excluded from both, because the failure
+    directions are not comparable — an over-claimed tile costs a detour,
+    a dropped victim costs a life.
     """
 
     def test_every_burning_tile_is_believed_to_be_burning(
         self, comparison: GridComparison
     ) -> None:
+        """The safety half: fire may be over-stated, never under-stated."""
         assert comparison.scores[OccupancyCode.FIRE].recall == 1.0
+        assert comparison.scores[OccupancyCode.FIRE].false_negatives == 0
 
-    def test_the_belief_claims_more_fire_than_there_is(
+    def test_no_tile_is_believed_burning_that_is_not(
         self, comparison: GridComparison
     ) -> None:
-        score = comparison.scores[OccupancyCode.FIRE]
-        assert score.false_positives > 0
-        assert score.false_negatives == 0
+        """The precision half, which the bounding box used to lose entirely."""
+        assert comparison.scores[OccupancyCode.FIRE].false_positives == 0
+        assert comparison.scores[OccupancyCode.FIRE].iou == 1.0
 
     def test_the_error_is_never_a_hazard_the_vehicle_would_drive_into(
         self, comparison: GridComparison
@@ -141,14 +148,29 @@ class TestFireIsOverMarkedNotUnderMarked:
         assert comparison.missed_hazards == frozenset()
         assert comparison.is_drivable
 
-    def test_the_phantom_tiles_all_border_a_real_fire(
-        self, comparison: GridComparison, city_map: CityMap
+    def test_no_open_street_is_believed_blocked(
+        self, comparison: GridComparison
     ) -> None:
-        """Bounding-box corners, not scattered noise."""
-        truth = OccupancyGrid.from_city_map(city_map)
-        burning = set(truth.positions_with(OccupancyCode.FIRE))
-        for phantom in comparison.phantom_obstacles:
-            assert any(phantom.distance_to(tile) <= 2.0 for tile in burning)
+        """The regression that failed a mission: phantom walls around a fire."""
+        assert comparison.phantom_obstacles == frozenset()
+
+    def test_a_fire_truncated_by_the_map_edge_keeps_its_raw_footprint(
+        self, rig: SensorRig, city_map: CityMap, builder: OccupancyGridBuilder
+    ) -> None:
+        """The reconstruction refuses to guess where it cannot be exact.
+
+        A disc clipped by the border has no recoverable centre, so the
+        footprint is left as the box drew it — over-marked, which is the
+        direction that cannot strand the vehicle in a fire.
+        """
+        city_map.fires[0].position = Position(0, 5)
+        city_map.fires[0].radius = 2
+        city_map.fires[0].intensity = 1.0
+        believed = _belief(rig, city_map, builder)
+        burning = OccupancyGrid.from_city_map(city_map).positions_with(OccupancyCode.FIRE)
+
+        believed_fire = set(believed.positions_with(OccupancyCode.FIRE))
+        assert set(burning) <= believed_fire
 
 
 class TestTheMissionStillWorksOnTheBelief:
@@ -209,11 +231,15 @@ class TestTheTerrainDetectionSplit:
         assert walls
         assert walls.isdisjoint(comparison.missed_hazards)
 
-    def test_every_lost_building_tile_was_overwritten_by_fire(
-        self, comparison: GridComparison, rig: SensorRig, city_map: CityMap,
-        builder: OccupancyGridBuilder,
+    def test_no_building_tile_is_lost_at_all(
+        self, rig: SensorRig, city_map: CityMap, builder: OccupancyGridBuilder
     ) -> None:
-        """Pins the cause, so a genuine terrain regression cannot hide here."""
+        """Buildings used to be overwritten by fire boxes overlapping them.
+
+        Harmless — both codes are impassable — but it was the visible edge
+        of the footprint bloat that did do harm elsewhere. With fire
+        recovered exactly, no wall is repainted.
+        """
         truth = OccupancyGrid.from_city_map(city_map)
         belief = _belief(rig, city_map, builder)
         lost = [
@@ -221,8 +247,7 @@ class TestTheTerrainDetectionSplit:
             for tile in truth.positions_with(OccupancyCode.BUILDING)
             if belief.code_at(tile) is not OccupancyCode.BUILDING
         ]
-        assert lost, "no overlap left to explain — revisit this test"
-        assert all(belief.code_at(tile) is OccupancyCode.FIRE for tile in lost)
+        assert lost == []
 
     def test_a_collapse_after_the_survey_is_still_found(
         self, rig: SensorRig, city_map: CityMap, builder: OccupancyGridBuilder
@@ -273,12 +298,19 @@ class TestScoresAreStable:
         assert first.cell_agreement == second.cell_agreement
         assert first.phantom_obstacles == second.phantom_obstacles
 
-    def test_traversability_agreement_clears_the_bar_a_mission_needs(
-        self, comparison: GridComparison
+    def test_a_perfect_detector_reproduces_the_world_exactly(
+        self, rig: SensorRig, city_map: CityMap, builder: OccupancyGridBuilder
     ) -> None:
-        """Loose on purpose — this guards against collapse, not a tuned number.
+        """The headline 3.3 claim, and the strictest possible form of it.
 
-        The exact figure is recorded in docs/architecture/phase3-detection.md;
-        pinning it here would make every camera-layout change a test failure.
+        Cameras, projection, merging and precedence together lose nothing.
+        Any future change that costs a single cell fails here, which is why
+        this is an equality rather than a threshold.
         """
-        assert comparison.traversability_agreement > 0.95
+        truth = OccupancyGrid.from_city_map(city_map)
+        truth.mark_vehicle(city_map.vehicle.position)
+        assert np.array_equal(_belief(rig, city_map, builder).cells, truth.cells)
+
+    def test_agreement_is_total(self, comparison: GridComparison) -> None:
+        assert comparison.cell_agreement == 1.0
+        assert comparison.traversability_agreement == 1.0

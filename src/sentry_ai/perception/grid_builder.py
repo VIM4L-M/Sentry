@@ -32,7 +32,12 @@ from dataclasses import dataclass
 from sentry_ai.common.logging_config import get_logger
 from sentry_ai.domain.entities import Position
 from sentry_ai.domain.enums import EntityKind
-from sentry_ai.domain.occupancy import CityMapLike, OccupancyCode, OccupancyGrid
+from sentry_ai.domain.occupancy import (
+    CityMapLike,
+    OccupancyCode,
+    OccupancyGrid,
+    tiles_within,
+)
 from sentry_ai.perception.merger import WorldDetection
 
 logger = get_logger(__name__)
@@ -58,6 +63,11 @@ _STAMP_ORDER: tuple[EntityKind, ...] = (
     EntityKind.FIRE,
     EntityKind.VICTIM,
 )
+
+#: Classes whose footprint is known to be a disc, so a detection's bounding
+#: box may be read back as the disc it bounds. Fire is the only one: victims
+#: and debris occupy a single tile, where a box and its contents agree.
+_DISC_SHAPED = frozenset({EntityKind.FIRE})
 
 
 @dataclass(frozen=True)
@@ -130,7 +140,7 @@ class OccupancyGridBuilder:
         for kind in _STAMP_ORDER:
             code = DETECTION_TO_OCCUPANCY[kind]
             for found in (one for one in kept if one.label is kind):
-                self._stamp(grid, found.tiles, code)
+                self._stamp(grid, self._footprint(found), code)
 
         self._restore_hospital(grid)
         if vehicle_position is not None and grid.in_bounds(vehicle_position):
@@ -138,6 +148,52 @@ class OccupancyGridBuilder:
 
         self._log_discards(detections, kept)
         return grid
+
+    def _footprint(self, found: WorldDetection) -> frozenset[Position]:
+        """The tiles a detection actually occupies, not just the ones its box spans.
+
+        A bounding box is a rectangle; a fire is a disc. Marking the whole
+        rectangle doubles a fire's footprint — measured at exactly 2x on the
+        shipped map — and the corner tiles it invents are impassable, so a
+        wide enough blaze walls off streets that are open. That is not a
+        detour: it cost two victims and a failed mission before this existed.
+
+        The disc is not guessed. ``tiles_within`` is the codebase's single
+        definition of a circular footprint, shared with the fire model and
+        with ``OccupancyGrid.mark_radius`` — so this reads a box back through
+        the very rule that drew it.
+
+        Applied only under conditions where the reconstruction is exact, and
+        always by *intersection*, so it can remove a corner but never invent
+        a tile. Anything unusual keeps the raw footprint, which is the
+        over-marking this replaces: still safe, merely wasteful.
+        """
+        if found.label not in _DISC_SHAPED:
+            return found.tiles
+        return self._as_disc(found.tiles)
+
+    def _as_disc(self, tiles: frozenset[Position]) -> frozenset[Position]:
+        """Read a bounding footprint back as the disc it encloses."""
+        x_min = min(tile.x for tile in tiles)
+        x_max = max(tile.x for tile in tiles)
+        y_min = min(tile.y for tile in tiles)
+        y_max = max(tile.y for tile in tiles)
+        span = x_max - x_min
+
+        # A whole disc of radius r spans exactly 2r+1 tiles each way. A
+        # footprint that is not an odd-sided square is something else — a
+        # blaze clipped by the frame, or two fires merged into one blob —
+        # and its centre cannot be recovered from its extent.
+        if span != y_max - y_min or span % 2 != 0:
+            return tiles
+        # Touching the map edge means the disc may be truncated, which moves
+        # the apparent centre inward and would shave real fire off the far side.
+        if x_min == 0 or y_min == 0 or x_max == self.width - 1 or y_max == self.height - 1:
+            return tiles
+
+        radius = span // 2
+        centre = Position(x_min + radius, y_min + radius)
+        return tiles & frozenset(tiles_within(centre, radius, self.width, self.height))
 
     @staticmethod
     def _stamp(grid: OccupancyGrid, tiles: Iterable[Position], code: OccupancyCode) -> None:

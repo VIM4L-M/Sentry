@@ -131,6 +131,38 @@ class CameraView:
             for tile_x in range(x_min // self.tile_size_px, x_max // self.tile_size_px + 1)
         )
 
+    def tiles_centred_in_box(self, box: BoundingBox) -> frozenset[Position]:
+        """Every world tile whose *centre* falls inside a detection's box.
+
+        The strict counterpart to :meth:`tiles_of_box`, which counts a tile
+        on a single pixel of overlap. That generosity is right for a marker
+        painted well inside one tile, and wrong for anything spanning many:
+        a box half a tile too wide claims a whole extra ring of tiles, and
+        for a fire that ring is impassable. Measured on the shipped map, a
+        detector's fire boxes are consistently about half a tile wide of the
+        truth, which doubled the believed footprint and walled off streets
+        that were open.
+
+        Requiring the centre tolerates exactly that error — up to half a
+        tile in any direction — while still marking every tile the fire
+        genuinely covers.
+
+        Not used for victims. A victim marker occupies a quarter of its
+        tile, so a box that drifted far enough would contain *no* tile
+        centre and the person would vanish from the map entirely. Over-
+        claiming a tile costs a detour; losing a victim costs a life, and
+        the projection rule follows that asymmetry the same way the merge
+        rule does.
+        """
+        half = self.tile_size_px // 2
+        return frozenset(
+            Position(self.origin.x + tile_x, self.origin.y + tile_y)
+            for tile_y in range(self.height_tiles)
+            for tile_x in range(self.width_tiles)
+            if box.x_min <= tile_x * self.tile_size_px + half < box.x_max
+            and box.y_min <= tile_y * self.tile_size_px + half < box.y_max
+        )
+
 
 @dataclass(frozen=True)
 class OnboardCamera:

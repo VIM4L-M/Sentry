@@ -36,9 +36,13 @@ from sentry_ai.domain.occupancy import OccupancyGrid
 from sentry_ai.navigation.astar import AStarPlanner
 from sentry_ai.perception.grid_builder import OccupancyGridBuilder
 from sentry_ai.perception.grid_metrics import GridComparison
-from sentry_ai.perception.merger import CameraObservation, DetectionMerger
+from sentry_ai.perception.grid_source import (
+    DetectedGridSource,
+    GroundTruthObserver,
+    IFrameObserver,
+    ModelObserver,
+)
 from sentry_ai.sensors.degradation import FrameDegrader
-from sentry_ai.sensors.frame import CameraFrame
 from sentry_ai.sensors.palette import SensorPalette
 from sentry_ai.sensors.rig import SensorRig
 
@@ -59,25 +63,22 @@ def main() -> int:
         sensor_config, SensorPalette.from_config(loader, args.sensors)
     )
     city_map = CityMap.from_config(loader.load_yaml(app_config.map_config_path))
-    degrader = FrameDegrader(sensor_config.degradation, np.random.default_rng(args.seed))
 
-    frames = [degrader.degrade(frame) for frame in rig.capture_cctv(city_map)]
-    observations = _observe(frames, loader, args)
-    merged = DetectionMerger().merge(observations)
+    source = DetectedGridSource(
+        rig=rig,
+        observer=_observer(loader, args),
+        builder=OccupancyGridBuilder.from_city_map(city_map, min_confidence=args.min_confidence),
+        degrader=FrameDegrader(sensor_config.degradation, np.random.default_rng(args.seed)),
+    )
+    belief = source.grid_for(city_map, city_map.vehicle.position)
 
-    belief = OccupancyGridBuilder.from_city_map(
-        city_map, min_confidence=args.min_confidence
-    ).build(merged, vehicle_position=city_map.vehicle.position)
-
-    _report(GridComparison.between(OccupancyGrid.from_city_map(city_map), belief), city_map,
-            belief, len(merged), args)
+    _report(GridComparison.between(OccupancyGrid.from_city_map(city_map), belief),
+            city_map, belief, args)
     return 0
 
 
-def _observe(
-    frames: list[CameraFrame], loader: ConfigLoader, args: argparse.Namespace
-) -> list[CameraObservation]:
-    """Detections per camera, from the model or from the answer key.
+def _observer(loader: ConfigLoader, args: argparse.Namespace) -> IFrameObserver:
+    """How frames become detections: the model, or the answer key.
 
     ``--perfect`` substitutes the rasterizer's own annotations, which isolates
     the projection and merge steps from the detector entirely. Any
@@ -85,32 +86,28 @@ def _observe(
     """
     if args.perfect:
         logger.info("Using ground-truth annotations in place of the detector")
-        return [CameraObservation(frame.view, frame.annotations) for frame in frames]
+        return GroundTruthObserver()
 
     from sentry_ai.perception.yolo_detector import YoloDetector  # noqa: PLC0415
 
-    detector = YoloDetector(
-        weights_path=loader.resolve(args.weights),
-        confidence=args.confidence,
-        image_size=args.image_size,
-        device=args.device,
+    return ModelObserver(
+        YoloDetector(
+            weights_path=loader.resolve(args.weights),
+            confidence=args.confidence,
+            image_size=args.image_size,
+            device=args.device,
+        )
     )
-    return [
-        CameraObservation(frame.view, tuple(detector.detect(frame.pixels)))
-        for frame in frames
-    ]
 
 
 def _report(
     result: GridComparison,
     city_map: CityMap,
     belief: OccupancyGrid,
-    merged_count: int,
     args: argparse.Namespace,
 ) -> None:
     """Print the scores, then say whether a mission could actually run on this."""
-    source = "ground truth" if args.perfect else args.weights
-    print(f"Belief grid from {source} — {merged_count} merged detection(s)\n")
+    print(f"Belief grid from {'ground truth' if args.perfect else args.weights}\n")
     print(result.summary())
 
     print("\nMission viability")

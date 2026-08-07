@@ -35,6 +35,15 @@ logger = get_logger(__name__)
 #: annotation spans many tiles and gets clipped differently by each camera.
 _MERGE_ON_ADJACENCY = frozenset({EntityKind.FIRE})
 
+#: Classes projected by tile *centre* rather than by any pixel overlap.
+#: A detector's box is a pixel or two off, and for something spanning many
+#: tiles that error claims a whole extra ring — which for fire is a ring of
+#: impassable cells. Requiring the centre absorbs up to half a tile of error.
+#: Victims are deliberately excluded: their marker fills a quarter of a tile,
+#: so the strict rule could drop them entirely, and losing a victim is the
+#: one error this system may not make. Same asymmetry as the merge rule.
+_PROJECT_BY_CENTRE = frozenset({EntityKind.FIRE})
+
 
 @dataclass(frozen=True)
 class CameraObservation:
@@ -160,18 +169,33 @@ class DetectionMerger:
             )
         return merged
 
-    @staticmethod
-    def _project(observation: CameraObservation) -> list[WorldDetection]:
+    @classmethod
+    def _project(cls, observation: CameraObservation) -> list[WorldDetection]:
         """Every detection in one frame, converted to world tiles."""
         return [
             WorldDetection(
                 label=detection.label,
-                tiles=observation.view.tiles_of_box(detection.bbox),
+                tiles=cls._tiles_for(observation, detection),
                 confidence=detection.confidence,
                 camera_ids=frozenset({observation.camera_id}),
             )
             for detection in observation.detections
         ]
+
+    @staticmethod
+    def _tiles_for(observation: CameraObservation, detection: Detection) -> frozenset[Position]:
+        """The world footprint of one box, strictly or generously by label.
+
+        See :data:`_PROJECT_BY_CENTRE` for why fire is measured differently
+        from the people this system exists to find. A detection that lands
+        on no tile at all under the strict rule falls back to the generous
+        one — a hazard the detector reported must never disappear because it
+        was reported half a tile off.
+        """
+        if detection.label not in _PROJECT_BY_CENTRE:
+            return observation.view.tiles_of_box(detection.bbox)
+        centred = observation.view.tiles_centred_in_box(detection.bbox)
+        return centred if centred else observation.view.tiles_of_box(detection.bbox)
 
     def _group(self, candidates: Sequence[WorldDetection]) -> list[list[WorldDetection]]:
         """Partition candidates into groups that describe the same object.

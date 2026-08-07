@@ -341,3 +341,58 @@ class TestWorldDetection:
     def test_an_out_of_range_confidence_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="confidence"):
             WorldDetection(EntityKind.VICTIM, frozenset({Position(0, 0)}), 1.4)
+
+
+class TestProjectionIsLabelAware:
+    """Fire projects by tile centre; victims never do.
+
+    Both rules exist because a detector's box is a pixel or two off, and the
+    two classes pay opposite prices for that error. An over-claimed tile
+    around a fire is an impassable cell in the middle of an open street. A
+    dropped victim is a person nobody is sent to.
+    """
+
+    def test_a_slightly_wide_fire_box_does_not_claim_the_next_tile(self) -> None:
+        view = _view("cctv_nw")
+        x_min, y_min, _, _ = view.tile_rect(Position(3, 3))
+        # One tile's worth of fire, with the box 5px proud on every side.
+        sloppy = Detection(
+            label=EntityKind.FIRE,
+            confidence=0.9,
+            bbox=BoundingBox(x_min - 5, y_min - 5, x_min + TILE + 5, y_min + TILE + 5),
+        )
+        merged = DetectionMerger().merge([CameraObservation(view, (sloppy,))])
+        assert len(merged) == 1
+        assert merged[0].tiles == {Position(3, 3)}
+
+    def test_the_same_slop_on_a_victim_box_is_tolerated(self) -> None:
+        """Victims keep the generous rule — losing one is unrecoverable."""
+        view = _view("cctv_nw")
+        x_min, y_min, _, _ = view.tile_rect(Position(3, 3))
+        tiny = Detection(
+            label=EntityKind.VICTIM,
+            confidence=0.9,
+            bbox=BoundingBox(x_min + 11, y_min + 11, x_min + 15, y_min + 15),
+        )
+        merged = DetectionMerger().merge([CameraObservation(view, (tiny,))])
+        assert merged[0].tiles == {Position(3, 3)}
+
+    def test_a_fire_box_containing_no_tile_centre_still_reports_something(self) -> None:
+        """A hazard must never vanish because it was reported half a tile off."""
+        view = _view("cctv_nw")
+        x_min, y_min, _, _ = view.tile_rect(Position(3, 3))
+        offset = Detection(
+            label=EntityKind.FIRE,
+            confidence=0.9,
+            bbox=BoundingBox(x_min + 10, y_min + 10, x_min + 14, y_min + 14),
+        )
+        merged = DetectionMerger().merge([CameraObservation(view, (offset,))])
+        assert len(merged) == 1
+        assert merged[0].tiles
+
+    def test_a_multi_tile_fire_still_spans_its_tiles(self) -> None:
+        view = _view("cctv_nw")
+        merged = DetectionMerger().merge(
+            [CameraObservation(view, (_span(view, Position(2, 2), Position(5, 4)),))]
+        )
+        assert len(merged[0].tiles) == 12

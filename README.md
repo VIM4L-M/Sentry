@@ -5,14 +5,14 @@ Deep Learning project. See [`PROJECT.md`](PROJECT.md) for the full architecture,
 diagrams, phase roadmap, and API contracts. See [`CLAUDE.md`](CLAUDE.md) for the working
 rules this codebase follows.
 
-**Status:** Phases 1 and 2 complete; Phase 3 complete through 3.3 (detection,
-cross-camera merging, and the detector-built occupancy grid). A full autonomous rescue mission runs end to end
+**Status:** Phases 1, 2 and 3 complete. A full autonomous rescue mission runs end to end
 (occupancy grid → A\* routing → mission control → live HUD) in a city that changes
 underneath it: fire spreads, buildings collapse into the streets, and the command
-center replans around both. A four-camera CCTV network plus the vehicle's onboard view
-produce labelled frames for the AI phases, and those detections now build the
-occupancy grid the planner reasons over. Phase 3.4 wires that grid into the
-mission loop. See PROJECT.md §10-11 for the phase breakdown and milestones.
+center replans around both. A four-camera CCTV network feeds a YOLOv8n detector
+whose output builds the occupancy grid the planner reasons over — the vehicle
+can complete a rescue on what it *sees* rather than on ground truth. Phase 4
+(denoising autoencoder) is next. See PROJECT.md §10-11 for the phase breakdown
+and milestones.
 
 ## Quick Start
 
@@ -34,11 +34,12 @@ mypy src scripts                                 # type checking
 ruff check src tests scripts                      # linting
 ```
 
-Run a rescue mission (Phase 2 — the vehicle plans routes and drives itself):
+Run a rescue mission (the vehicle plans routes and drives itself):
 
 ```bash
-python scripts/run_simulation.py              # windowed
-python scripts/run_simulation.py --headless   # no window, prints the outcome
+python scripts/run_simulation.py                          # windowed, ground-truth map
+python scripts/run_simulation.py --headless               # no window, prints the outcome
+python scripts/run_simulation.py --perception --device cuda   # plan on what the cameras see
 ```
 
 | Key | Action |
@@ -71,9 +72,10 @@ different disaster on the same map, change `hazards.seed` in
 `configs/simulation.yaml`.
 
 Press `G` and the city is replaced by the occupancy grid the planner
-actually reasons over — the 0-6 codes, colour-coded and numbered. Today it
-matches the world exactly; from Phase 3 it will be built from detections and
-will be wrong in interesting ways, and this is how you will see that.
+actually reasons over — the 0-6 codes, colour-coded and numbered. Without
+`--perception` it matches the world exactly. With it, you are looking at a
+*belief* assembled from YOLO detections, and this is how you see where it is
+wrong.
 
 Capture the synthetic perception dataset (what Phases 3 and 4 train on):
 
@@ -179,12 +181,31 @@ Cell accuracy is the wrong headline here: the grid is ~94% road and building,
 so a belief that detected nothing would still score in the nineties. What gets
 reported instead is the three failure modes, as tile sets rather than counts —
 a **missed hazard** drives the vehicle into a fire, a **phantom obstacle** costs
-a detour, and a **missed victim** means nobody is ever dispatched. Against the
-trained detector on degraded frames: **0 missed hazards, 0 missed victims, 4/4
-victims reachable**, holding at every sample of a full 184-tick mission through
-two collapses. Fire is over-marked by construction — a camera reports a box and
-ground truth stamps a disc — which is the safe direction, and the builder
-deliberately does not guess a radius to trim it back.
+a detour, and a **missed victim** means nobody is ever dispatched.
+
+Fire was where this bit. A camera reports a box; ground truth stamps a disc,
+and marking the whole box doubled the believed footprint. Those invented tiles
+are impassable, so they walled off open streets — measured, that cost two
+victims and failed a mission. Fire now projects by tile *centre* rather than
+any pixel overlap, and a square footprint is read back through the same
+`tiles_within` that drew it. Victims are excluded from both rules on purpose:
+an over-claimed tile costs a detour, a dropped victim costs a life.
+
+**3.4 / 3.5 — the mission runs on it.** `MissionController` now asks an
+injected `IOccupancyGridSource` for its map, so ground truth and perception are
+interchangeable and nothing downstream can tell which it got:
+
+```bash
+python scripts/run_simulation.py --perception --device cuda
+```
+
+Press `G` and the grid view is a *belief* rather than the world. Against real
+`labelfix` weights on degraded frames, across six hazard seeds, missions
+complete with **4 rescued, 0 lost, 0 unreachable** — identical to ground truth.
+On the shipped map the pipeline is lossless: the grid built from YOLO output
+matches `from_city_map` cell for cell, which a test asserts as an equality.
+The caveats, and the failure modes that remain, are in
+[`docs/architecture/phase3-detection.md`](docs/architecture/phase3-detection.md).
 
 ## Project Layout
 
@@ -196,7 +217,7 @@ src/sentry_ai/
   domain/      Entities, enums, CityMap, OccupancyGrid — pure Python, no frameworks
   interfaces/  Ports (ABCs): perception, sequence, navigation, world, decision fusion
   navigation/  A* global route planner (classical, not learned)
-  perception/  YOLO detector adapter, cross-camera merger, occupancy-grid builder
+  perception/  YOLO adapter, cross-camera merger, occupancy-grid builder + scoring
   simulation/  Tick engine, mission state machine, vehicle physics, hazards
   sensors/     Synthetic cameras: rasterizer, ground-truth labels, frame degradation
   rendering/   Pygame map renderer, HUD, keyboard input, mission window

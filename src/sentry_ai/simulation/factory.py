@@ -16,10 +16,11 @@ from dataclasses import dataclass, replace
 
 from sentry_ai.config.schema import SimulationConfig, VehicleConfig
 from sentry_ai.domain.map import CityMap
-from sentry_ai.domain.occupancy import OccupancyGrid
 from sentry_ai.interfaces.navigation import ILocalController
+from sentry_ai.interfaces.world import IOccupancyGridSource
 from sentry_ai.navigation.astar import AStarPlanner
 from sentry_ai.simulation.engine import SimulationEngine
+from sentry_ai.simulation.grid_source import GroundTruthGridSource
 from sentry_ai.simulation.hazards import build_world_processes
 from sentry_ai.simulation.mission import MissionController
 from sentry_ai.simulation.waypoint_follower import WaypointFollower
@@ -50,6 +51,7 @@ def build_mission(
     *,
     controller: ILocalController | None = None,
     hazard_seed: int | None = None,
+    grid_source: IOccupancyGridSource | None = None,
 ) -> Mission:
     """Compose a mission over ``city_map``.
 
@@ -67,6 +69,12 @@ def build_mission(
             how the dataset builder gets a *different* disaster from the
             same starting map on every run, which is the only source of
             variety the training set has.
+        grid_source: Where the command center's belief map comes from.
+            Defaults to
+            :class:`~sentry_ai.simulation.grid_source.GroundTruthGridSource`
+            — perfect perception, the Phase 2 behaviour. Pass
+            :class:`~sentry_ai.perception.grid_source.DetectedGridSource`
+            to run the mission on what the cameras actually see.
 
     Returns:
         An unstarted :class:`Mission`.
@@ -75,11 +83,16 @@ def build_mission(
     if hazard_seed is not None:
         hazards = replace(hazards, seed=hazard_seed)
 
+    source = grid_source if grid_source is not None else GroundTruthGridSource()
     mission = MissionController(
         city_map=city_map,
-        grid=OccupancyGrid.from_city_map(city_map),
+        # The mission refreshes this on its first tick; seeding it from the
+        # same source keeps a freshly built mission consistent with one that
+        # has already run, which the HUD renders before any tick happens.
+        grid=source.grid_for(city_map, city_map.vehicle.position),
         planner=AStarPlanner(simulation_config.planner),
         config=simulation_config.mission,
+        grid_source=source,
     )
     engine = SimulationEngine(
         city_map=city_map,

@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from sentry_ai.domain.entities import Position
 from sentry_ai.domain.map import CityMap
+from sentry_ai.domain.occupancy import OccupancyGrid
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,44 @@ class WorldChange:
             changed_tiles=self.changed_tiles | other.changed_tiles,
             description="; ".join(descriptions),
         )
+
+
+class IOccupancyGridSource(ABC):
+    """Where the command center's belief map comes from.
+
+    The one seam Phase 3 exists to move. Until Phase 3 there was a single
+    producer — ``OccupancyGrid.from_city_map``, the simulator handing over
+    its own truth — and
+    :class:`~sentry_ai.simulation.mission.MissionController` called it
+    directly. Behind this port it becomes a choice:
+
+    * :class:`~sentry_ai.simulation.grid_source.GroundTruthGridSource` —
+      the Phase 2 behaviour, and the reference a detector is scored against.
+    * :class:`~sentry_ai.perception.grid_source.DetectedGridSource` — the
+      camera pipeline, which is wrong in interesting ways.
+
+    Swapping them must not change a line of ``navigation/`` or the mission
+    state machine. That is the claim ADR 0002 makes and Phase 3.5 tests.
+    """
+
+    @abstractmethod
+    def grid_for(self, city_map: CityMap, vehicle_position: Position) -> OccupancyGrid:
+        """Produce the grid the planner should reason over right now.
+
+        Args:
+            city_map: The world. A ground-truth source reads it directly; a
+                perception source is only allowed to look at it *through*
+                cameras, which is the distinction the two implementations
+                embody.
+            vehicle_position: Where the vehicle is. Supplied rather than
+                detected — the command center knows where its own vehicle
+                is, and no detector class reports one.
+
+        Returns:
+            A fresh grid. Callers mutate what they are given, so returning a
+            cached instance would let one tick corrupt the next.
+        """
+        raise NotImplementedError
 
 
 class IWorldProcess(ABC):

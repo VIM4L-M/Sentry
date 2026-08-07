@@ -22,7 +22,9 @@ from sentry_ai.domain.enums import VictimStatus
 from sentry_ai.domain.map import CityMap
 from sentry_ai.domain.occupancy import OccupancyGrid
 from sentry_ai.interfaces.navigation import IRoutePlanner, Route
+from sentry_ai.interfaces.world import IOccupancyGridSource
 from sentry_ai.simulation.events import EventKind, EventLog
+from sentry_ai.simulation.grid_source import GroundTruthGridSource
 
 logger = get_logger(__name__)
 
@@ -82,6 +84,10 @@ class MissionController:
         grid: The command center's belief map, kept in sync each tick.
         planner: Global route planner, injected as a port.
         config: Success/failure/replanning rules.
+        grid_source: Where the belief map comes from each tick. Defaults to
+            ground truth, which is the Phase 2 behaviour; Phase 3 injects
+            the camera pipeline here instead. This class cannot tell the
+            difference, and that is the entire point of the seam.
         events: Running record of what happened, for the HUD and demos.
     """
 
@@ -89,6 +95,7 @@ class MissionController:
     grid: OccupancyGrid
     planner: IRoutePlanner
     config: MissionConfig
+    grid_source: IOccupancyGridSource = field(default_factory=GroundTruthGridSource)
     stats: MissionStats = field(default_factory=MissionStats)
     events: EventLog = field(default_factory=EventLog)
 
@@ -205,14 +212,17 @@ class MissionController:
             self._replan(vehicle)
 
     def refresh_grid(self, vehicle: Vehicle) -> None:
-        """Rebuild the belief map from the world, then stamp the vehicle on it.
+        """Ask the grid source for a fresh belief map.
 
         Public because the engine also calls it the moment a hazard changes
         the city: the command center must not keep planning against a map
         that a collapse has already made wrong.
+
+        Whether that map is ground truth or a detector's guess is decided by
+        whoever composed this controller. Nothing below this line — routing,
+        triage, the failure rules — knows or asks.
         """
-        self.grid = OccupancyGrid.from_city_map(self.city_map)
-        self.grid.mark_vehicle(vehicle.position)
+        self.grid = self.grid_source.grid_for(self.city_map, vehicle.position)
 
     def _advance_route(self, vehicle: Vehicle) -> None:
         """Consume waypoints the vehicle has already reached."""

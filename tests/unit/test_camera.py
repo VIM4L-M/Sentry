@@ -182,3 +182,65 @@ class TestOnboardCamera:
         }
         with pytest.raises(ConfigValidationError, match=field):
             OnboardCamera(**kwargs)  # type: ignore[arg-type]
+
+
+class TestProjectingByCentre:
+    """tiles_centred_in_box is the strict rule fire is projected with.
+
+    ``tiles_of_box`` claims a tile on a single pixel of overlap, which is
+    right for a marker painted well inside one tile and wrong for anything
+    spanning several: a detector's box is a pixel or two off, and that error
+    claims a whole extra ring. For fire that ring is impassable, so it walls
+    off streets that are open. Requiring the tile's centre absorbs up to
+    half a tile of error instead.
+    """
+
+    def test_a_box_inside_one_tile_yields_that_tile(self) -> None:
+        # Tile (6, 3) occupies pixels x 20..30, y 10..20; its centre is (25, 15).
+        assert _view().tiles_centred_in_box(BoundingBox(22, 12, 28, 18)) == {Position(6, 3)}
+
+    def test_a_box_that_misses_every_centre_yields_nothing(self) -> None:
+        """The reason victims are never projected this way."""
+        assert _view().tiles_centred_in_box(BoundingBox(26, 16, 29, 19)) == frozenset()
+
+    def test_a_sliver_into_the_next_tile_does_not_claim_it(self) -> None:
+        """The exact over-claim that doubled fire's footprint."""
+        generous = _view().tiles_of_box(BoundingBox(22, 12, 32, 18))
+        strict = _view().tiles_centred_in_box(BoundingBox(22, 12, 32, 18))
+        assert generous == {Position(6, 3), Position(7, 3)}
+        assert strict == {Position(6, 3)}
+
+    def test_reaching_past_a_centre_does_claim_that_tile(self) -> None:
+        assert _view().tiles_centred_in_box(BoundingBox(22, 12, 36, 18)) == {
+            Position(6, 3),
+            Position(7, 3),
+        }
+
+    def test_half_a_tile_of_error_is_tolerated(self) -> None:
+        """A box 4px too wide on each side still yields the same tiles."""
+        exact = _view().tiles_centred_in_box(BoundingBox(20, 10, 40, 20))
+        sloppy = _view().tiles_centred_in_box(BoundingBox(16, 6, 44, 24))
+        assert exact == sloppy == {Position(6, 3), Position(7, 3)}
+
+    def test_a_box_covering_the_frame_yields_every_tile(self) -> None:
+        view = _view()
+        assert view.tiles_centred_in_box(BoundingBox(0, 0, 50, 30)) == set(view.world_tiles())
+
+    def test_it_never_claims_more_than_the_generous_rule(self) -> None:
+        view = _view()
+        for box in (
+            BoundingBox(0, 0, 50, 30),
+            BoundingBox(22, 12, 28, 18),
+            BoundingBox(13, 7, 47, 27),
+        ):
+            assert view.tiles_centred_in_box(box) <= view.tiles_of_box(box)
+
+    def test_every_returned_tile_is_one_this_camera_sees(self) -> None:
+        view = _view()
+        tiles = view.tiles_centred_in_box(BoundingBox(0, 0, 50, 30))
+        assert all(view.covers(tile) for tile in tiles)
+
+    def test_a_box_overhanging_the_frame_invents_nothing(self) -> None:
+        view = _view()
+        tiles = view.tiles_centred_in_box(BoundingBox(40, 20, 999, 999))
+        assert tiles == {Position(8, 4)}

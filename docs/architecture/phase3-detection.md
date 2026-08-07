@@ -1,14 +1,23 @@
-# Phase 3.1 — YOLOv8n detection: design notes
+# Phase 3 — perception: design notes
 
-**Status:** Pipeline complete and verified end to end; the production training
-run is pending. Records decisions made *during* implementation that PROJECT.md
-does not specify.
+**Status:** complete, 3.1 through 3.5. A full mission runs on an occupancy grid
+built from YOLO detections, with `navigation/` and the mission state machine
+unchanged. Records decisions made *during* implementation that PROJECT.md does
+not specify.
 
-Phase 3 is split into five steps ([PROJECT.md §10](../../PROJECT.md)). This
-document covers 3.1 — getting a detector that turns an image into boxes, and
-nothing else. Merging those boxes across cameras (3.2) and building an occupancy
-grid from them (3.3) are separate steps precisely so the detector never learns
-anything about maps.
+Phase 3 is split into five steps ([PROJECT.md §10](../../PROJECT.md)), and the
+split is the design: the detector never learns anything about maps.
+
+| step | what it adds | testable without |
+|---|---|---|
+| 3.1 | image → boxes (`YoloDetector`) | maps, cameras |
+| 3.2 | boxes → one world belief (`DetectionMerger`) | a model |
+| 3.3 | belief → occupancy grid (`OccupancyGridBuilder`, `GridComparison`) | a model, a mission |
+| 3.4 | the grid producer becomes injectable (`IOccupancyGridSource`) | a model |
+| 3.5 | a whole mission runs on it | — |
+
+Sections below follow that order. 3.1 is the longest because it is where the
+labelling defect was found.
 
 ## What runs today
 
@@ -341,81 +350,175 @@ modes separately, because they cost completely different things:
 Each is reported as the *set of tiles*, not a count, because "which tiles"
 is what you need to debug a mission that went wrong.
 
-### Fire is over-marked, and that is the safe direction
+### Fire: a judgement that was wrong, and how it was caught
 
-The one disagreement a perfect detector cannot remove. Ground truth stamps a
-fire as a Euclidean **disc** (`mark_radius`); a camera reports an axis-aligned
-**box**, and a disc's bounding box includes its corners. With ground-truth
-annotations fed in as a perfect detector, fire recall is 1.000 and precision
-0.529 — every burning tile believed burning, plus a ring that is not.
+This section records a decision, its falsification, and its reversal, because
+the reasoning that produced the wrong answer was not obviously bad.
 
-This closes the question 3.1 left open. Fire was flagged there as the only
-class with a fuzzy painted boundary, "worth revisiting if 3.3 shows the grid
-over-marking fire". It does, and the cause is not the weights: it is
-information loss inherent to bounding boxes, present at 0.529 precision
-before the model is involved at all.
+Ground truth stamps a fire as a Euclidean **disc** (`mark_radius`); a camera
+reports an axis-aligned **box**, and a disc's bounding box includes its
+corners. Fed a *perfect* detector, the first version of 3.3 scored fire at
+recall 1.000 and precision **0.529** — every burning tile believed burning,
+plus a ring that was not.
 
-**The builder deliberately does not re-inscribe a disc.** It could estimate a
-centre and radius and carve the corners back off, and that would raise the
-number. It would also mean *removing* tiles from a hazard footprint on a
-guess — converting a harmless detour into a vehicle driving into a fire the
-moment the radius estimate is wrong. Over-marking a hazard is free; under-
-marking one is not. The asymmetry decides it, the same way it decided the
-merge rule in 3.2.
+**The original decision was to accept it.** The argument: trimming the ring
+means removing tiles from a hazard footprint on an estimate, and a wrong
+estimate turns a harmless detour into a vehicle driving into a fire. Over-
+marking a hazard is free; under-marking one is not.
+
+**The measurement that killed it.** Running a real mission on the belief grid:
+
+```
+ground truth : Mission completed  — 4 rescued, 0 lost, 0 unreachable
+perception   : Mission failed     — 2 rescued, 1 unreachable, hospital unreachable
+```
+
+The belief held **132 fire tiles against 66 in truth — exactly double**.
+Patching only the phantom fire tiles back to their true values restored the
+route. The inflated footprint was the sole cause.
+
+So "over-marking a hazard is free" was simply false. Fire is impassable, a
+doubled footprint is a doubled wall, and enough of them seal a city. The cost
+was not a detour; it was two victims and a failed mission.
+
+**Two changes recover the disc exactly.** Both are asymmetric between hazards
+and people, for the same reason the merge rule is:
+
+1. **Fire projects by tile centre, not by any pixel overlap.**
+   `tiles_of_box` claims a tile on one pixel of contact. That is right for a
+   marker painted well inside a tile and wrong for anything spanning several:
+   the detector's boxes run about half a tile wide, which claims a whole extra
+   ring. `tiles_centred_in_box` requires the tile's centre, absorbing up to
+   half a tile of regression error. Victims are excluded deliberately — their
+   marker fills a quarter of a tile, so the strict rule could yield *no* tile
+   and delete a person. A hazard reported half a tile off falls back to the
+   generous rule rather than vanishing.
+
+2. **A square footprint is read back as the disc it bounds**, through the same
+   `tiles_within` that drew it — so this inverts the drawing rule rather than
+   guessing a shape. It applies only where the reconstruction is exact (an
+   odd-sided square, clear of the map border) and only ever by *intersection*,
+   so it can remove a corner but never invent a tile. Anything else keeps the
+   raw footprint: over-marked, which is the direction that cannot strand the
+   vehicle in a fire.
+
+The safety property the original argument was protecting is kept — fire recall
+stays 1.000, and no test permits a missed hazard — while the precision that
+was actually costing missions is recovered.
 
 ### Measured against the real detector
 
 `scripts/evaluate_grid.py` runs the whole chain on the real city. `--perfect`
-substitutes ground-truth annotations, which isolates the projection and merge
-steps from the weights entirely.
+substitutes ground-truth annotations, isolating projection and merging from
+the weights entirely.
 
 | | perfect detector | `labelfix` weights, degraded frames |
 |---|---|---|
-| cell agreement | 0.9733 | 0.9433 |
-| traversability agreement | 0.9783 | 0.9483 |
-| **missed hazards** | **0** | **0** |
-| **missed victims** | **0** | **0** |
-| phantom obstacles | 13 | 31 |
+| cell agreement | **1.0000** | **1.0000** |
+| traversability agreement | 1.0000 | 1.0000 |
+| missed hazards | 0 | 0 |
+| missed victims | 0 | 0 |
+| phantom obstacles | 0 | 0 |
+| fire IoU | 1.000 | 1.000 |
 | victim IoU | 1.000 | 1.000 |
-| debris IoU | 1.000 | 1.000 |
-| fire precision | 0.529 | 0.346 |
 | victims reachable by A\* | 4/4 | 4/4 |
 
-The real detector produces a **mission-equivalent** grid. Every difference
-from the perfect run lands in the fire class — real boxes are looser, so the
-bloat roughly doubles. Victims and debris are pixel-exact in both, which
-answers the question 3.2 left open: a real box drifting a pixel or two still
-projects to the same tile, because those markers are painted well inside one.
+The pipeline is **lossless** on the shipped map: cameras, projection, merging
+and precedence together reproduce `from_city_map` cell for cell, from real
+YOLO output on degraded frames. `test_a_perfect_detector_reproduces_the_world_exactly`
+asserts the equality, so any future change that costs a single cell fails.
+
+Two cautions on reading that. It is one instant of one fixed map, and the
+detector is recognising distinctive markers at familiar locations — the same
+caveat 3.1 records about victim recall. And "identical to ground truth" is a
+statement about *this* city's fire geometry: isolated discs, which the
+reconstruction handles exactly. It degrades as soon as they stop being
+isolated, which the next table shows.
 
 ### Across an evolving disaster
 
-Scored every 25 ticks of a real 184-tick mission (hazard seed 7, fresh
-degradation noise each sample, terrain surveyed only at tick 0):
+Scored every 25 ticks of a real 184-tick mission (hazard seed 7, real
+detector, fresh degradation noise each sample, terrain surveyed only at
+tick 0):
 
 | tick | cells | traversability | missed hazards | phantom | missed victims | reachable |
 |---|---|---|---|---|---|---|
-| 0 | 0.9433 | 0.9483 | 0 | 31 | 0 | 4/4 |
-| 25 | 0.9533 | 0.9583 | 0 | 25 | 0 | 3/3 |
-| 50 | 0.9150 | 0.9350 | 0 | 39 | 0 | 2/2 |
-| 75 | 0.9033 | 0.9300 | 0 | 42 | 0 | 2/2 |
-| 100 | 0.9150 | 0.9383 | 0 | 37 | 0 | 2/2 |
-| 125 | 0.8967 | 0.9133 | 0 | 52 | 0 | 1/1 |
-| 150 | 0.8800 | 0.8983 | 0 | 61 | 0 | 0/0 |
-| 175 | 0.9100 | 0.9250 | 0 | 45 | 0 | 0/0 |
+| 0 | 1.0000 | 1.0000 | 0 | 0 | 0 | 4/4 |
+| 25 | 1.0000 | 1.0000 | 0 | 0 | 0 | 3/3 |
+| 50 | 1.0000 | 1.0000 | 0 | 0 | 0 | 2/2 |
+| 75 | 1.0000 | 1.0000 | 0 | 0 | 0 | 2/2 |
+| 100 | 0.9433 | 0.9583 | 0 | 25 | 0 | 2/2 |
+| 125 | 0.9400 | 0.9483 | 0 | 31 | 0 | 1/1 |
+| 150 | 0.9333 | 0.9433 | 0 | 34 | 0 | 0/0 |
+| 175 | 0.9333 | 0.9433 | 0 | 34 | 0 | 0/0 |
+
+Exact for the first 75 ticks, then decaying — and the decay is *by design*.
+As fires spread they overlap and merge into irregular blobs, whose footprints
+are no longer odd-sided squares, so the reconstruction correctly declines to
+act and the raw over-marking returns. The guard is doing its job: it would
+rather waste tiles than guess a centre it cannot recover. Phantom obstacles at
+tick 150 fell from 61 before the fix to 34 after.
 
 Two buildings collapsed during the run, at (23, 16) and (23, 5). Both were
-detected despite the survey being stale — the split works.
+detected despite the survey being stale — the terrain/detection split works.
 
 Never a missed hazard, never a missed victim, every remaining trapped victim
-reachable at every sample. Agreement decays from 0.948 to 0.898 as fires
-spread, and every point of that decay is fire bloat: more fire means more
-bounding-box corners.
+reachable at every sample.
 
-**What this does not yet show.** The mission above drove on the *ground-truth*
-grid; the belief grid was scored alongside it, not steering. Swapping the
-producer inside `MissionController` is 3.4/3.5, and until that runs there is
-no claim here that a mission *succeeds* on detector-derived perception — only
-that the map it would have been given was good enough to have succeeded.
+## 3.4 / 3.5 — the mission runs on it
+
+The Phase 3 deliverable here is the *absence* of new code. `AStarPlanner`,
+`MissionController`, `VehicleController` and `WaypointFollower` are unchanged
+Phase 2 logic; swapping the grid's producer is a constructor argument.
+
+### One seam, injected
+
+`MissionController.refresh_grid` called `OccupancyGrid.from_city_map`
+directly. It now asks an injected
+[`IOccupancyGridSource`](../../src/sentry_ai/interfaces/world.py):
+
+| implementation | reads |
+|---|---|
+| `GroundTruthGridSource` | the simulated world — Phase 2 behaviour, and the answer key |
+| `DetectedGridSource` | the city *through cameras* — rig, degrader, detector, merger, builder |
+
+That is the only line of the mission loop Phase 3 touches, and it is the seam
+ADR 0002 drew deliberately. The proof it was drawn in the right place: adding
+the port and defaulting it to ground truth left **all 646 existing tests
+passing with no test changed at all**.
+
+`IFrameObserver` sits inside `DetectedGridSource` so "run the model"
+(`ModelObserver`) and "use the answer key" (`GroundTruthObserver`) are the
+same shape. That is what makes a failure attributable — a mission that fails
+with a perfect observer has a wiring bug, not a weights problem — and it is
+shared with `evaluate_grid.py --perfect` rather than duplicated.
+
+### Results
+
+Real `labelfix` weights on degraded frames, driving the mission, against the
+same map and hazard seed on ground truth:
+
+| seed | ground truth | YOLO perception |
+|---|---|---|
+| 1 | completed — 4 rescued, 0 lost | completed — 4 rescued, 0 lost |
+| 3 | completed — 4 rescued, 0 lost | completed — 4 rescued, 0 lost |
+| 5 | completed — 4 rescued, 0 lost | completed — 4 rescued, 0 lost |
+| 7 | completed — 4 rescued, 0 lost | completed — 4 rescued, 0 lost |
+| 11 | completed — 4 rescued, 0 lost | completed — 4 rescued, 0 lost |
+| 13 | completed — 4 rescued, 0 lost | completed — 4 rescued, 0 lost |
+
+This is the **mission-success metric** that recall alone could never give:
+recall counts victims per frame, but a mission only needs each victim found in
+*one* of the many frames taken while the vehicle drives there.
+
+Run it either way, including in the live window:
+
+```bash
+python scripts/run_simulation.py --perception --device cuda
+```
+
+Press `G` with `--perception` on and the grid view is a *belief* rather than
+the world.
 
 ## Still open
 
@@ -424,24 +527,26 @@ that the map it would have been given was good enough to have succeeded.
   argue with, and the baseline's 54.5% turned out to measure a labelling bug
   rather than the detector, so the floor still has not been tested against a
   genuine limit.
-- **Mission success is not the same metric as recall.** Recall counts
-  victims per *frame*; a mission only needs each victim found in *one* frame
-  of the many a camera takes while it drives there. 3.3 supplies the missing
-  half — "every victim on the map, every victim reachable" is measurable now,
-  and holds at every sample of an evolving mission. The number that is still
-  missing is the one where the belief grid actually *steers*, which is 3.4.
-- **Phases 3.4-3.5.** Proving a full mission runs on a detector-derived grid
-  without `navigation/` or `simulation/` changing. `MissionController.
-  refresh_grid` currently calls `OccupancyGrid.from_city_map` directly, so
-  the swap needs a grid-source port injected there — the one seam Phase 3
-  legitimately has to touch, and the reason ADR 0002 drew it where it did.
-- **Fire's bounding-box bloat is bounded but unmeasured at scale.** Phantom
-  obstacles grew from 31 to 61 as fires spread across one mission and never
-  blocked a route. A larger map, or a fire model that spreads further, could
-  seal a corridor. The failure would be loud (`unreachable`), not silent, but
-  no test currently searches for the point where it happens.
+- **Merged fires are still over-marked.** The disc reconstruction only fires
+  on an isolated blaze, so once two fires overlap into an irregular blob the
+  raw bounding footprint returns — 34 phantom obstacles by tick 150 above.
+  That is the safe direction and it did not block a route here, but it is the
+  same class of defect that failed a mission before the fix, just smaller. A
+  larger map or a wider-spreading fire model could still seal a corridor. The
+  failure would be loud (`unreachable`) rather than silent, and no test yet
+  searches for the point where it happens.
+- **Everything is measured on one map.** Six hazard seeds vary the disaster
+  but not the street plan, the camera layout, or where the victims start. The
+  claim "the pipeline is lossless" is a claim about *this* city — in
+  particular about fire geometry being isolated discs, which is exactly the
+  case the reconstruction handles exactly.
 - **The static survey has no expiry.** Terrain is read once at mission start.
-  That is correct for this simulation, where the only terrain change is a
-  collapse the cameras also see. A hazard that altered terrain *outside*
-  camera coverage would go unnoticed forever, and nothing currently asserts
-  that camera coverage stays at 1.0 for the life of a mission.
+  Correct for this simulation, where the only terrain change is a collapse the
+  cameras also see. A hazard altering terrain *outside* camera coverage would
+  go unnoticed forever, and nothing asserts coverage stays at 1.0 for the life
+  of a mission.
+- **Confidence thresholding is untested as a control.** `min_confidence`
+  exists on the builder and defaults to 0.0 (trust the detector). Sweeping the
+  detector's own threshold from 0.25 to 0.7 changed fire precision not at all
+  — the boxes are confident and merely wide — so the knob has never been shown
+  to do anything useful.
