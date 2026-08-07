@@ -39,6 +39,9 @@ wheels/
 runs/
 *.log
 
+# Assistant working notes — local only, never shared
+CLAUDE.md
+
 # Editors / OS
 .vscode/
 .idea/
