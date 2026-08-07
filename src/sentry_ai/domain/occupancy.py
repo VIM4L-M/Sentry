@@ -142,6 +142,27 @@ class OccupancyGrid:
         return cls(cells=np.full((height, width), OccupancyCode.ROAD, dtype=np.uint8))
 
     @classmethod
+    def terrain_only(cls, city_map: CityMapLike) -> OccupancyGrid:
+        """Project just the static layout — no fires, victims, or vehicle.
+
+        This is the half of the grid the command center is entitled to know
+        without looking at a camera: the simulator generated the street plan,
+        so a detector rediscovering it would add parameters and label noise
+        while learning nothing (PROJECT.md, Phase 3). The Phase 3 builder
+        starts from this and adds only what the cameras actually saw.
+
+        Note that "static" means *as the layout was surveyed*. A building
+        that collapses mid-mission does not update here; that debris is a
+        dynamic fact, and finding it is the detector's job.
+        """
+        grid = cls.empty(city_map.width, city_map.height)
+        for y in range(city_map.height):
+            for x in range(city_map.width):
+                terrain = city_map.tile_at(Position(x, y))
+                grid.cells[y, x] = TERRAIN_TO_OCCUPANCY[terrain]
+        return grid
+
+    @classmethod
     def from_city_map(cls, city_map: CityMapLike) -> OccupancyGrid:
         """Project a :class:`~sentry_ai.domain.map.CityMap` into ground truth.
 
@@ -155,12 +176,7 @@ class OccupancyGrid:
         importing ``CityMap`` directly, so ``domain.map`` stays free to
         import this module without a cycle.
         """
-        grid = cls.empty(city_map.width, city_map.height)
-        for y in range(city_map.height):
-            for x in range(city_map.width):
-                terrain = city_map.tile_at(Position(x, y))
-                grid.cells[y, x] = TERRAIN_TO_OCCUPANCY[terrain]
-
+        grid = cls.terrain_only(city_map)
         for fire in city_map.fires:
             grid.mark_radius(fire.position, fire.radius, OccupancyCode.FIRE)
         for victim in city_map.victims:

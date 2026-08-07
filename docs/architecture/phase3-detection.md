@@ -286,6 +286,137 @@ painted extent scales with intensity — so slightly over-wide boxes are the
 expected failure. Not blocking, and worth revisiting if 3.3 shows the grid
 over-marking fire.
 
+## 3.3 — building the map
+
+`OccupancyGridBuilder` turns merged world-space detections into the
+`OccupancyGrid` A\* plans over, replacing `OccupancyGrid.from_city_map` as
+the *producer*. The ground-truth method stays, and `GridComparison` scores
+one against the other.
+
+```
+SensorRig -> FrameDegrader -> YoloDetector -> DetectionMerger
+          -> OccupancyGridBuilder -> GridComparison vs from_city_map
+```
+
+### Two sources, one grid
+
+The static street plan is copied from the surveyed map; only `FIRE`,
+`DEBRIS` and `VICTIM` come from the cameras. That is the decision PROJECT.md
+already recorded for Phase 3 — the simulator generated the layout, so
+training a detector to rediscover roads and buildings would cost parameters
+and add label noise to learn nothing.
+
+The consequence is deliberate and is the reason the split needs a test of its
+own: `OccupancyGridBuilder.terrain` is surveyed **once** and never refreshed.
+When a building collapses into a street mid-mission, the static half of the
+grid is stale, and the debris has to arrive through the cameras or not at
+all. `test_a_collapse_after_the_survey_is_still_found` asserts exactly that,
+and the evolving-mission run below exercises it twice for real.
+
+### Precedence is copied from the answer key, not reinvented
+
+Detections are stamped lowest-precedence-first — obstacle, then fire, then
+victim — mirroring `from_city_map`'s terrain → fires → victims order. If the
+two disagreed about a victim pinned in burning rubble, `GridComparison` would
+be measuring the disagreement rather than the detector. The hospital is
+restored last, so a detection on the drop-off point cannot erase the only
+place victims can be delivered.
+
+This is the same precedence rule as 3.1's labelling fix, now applied a third
+time. It is stated once per layer because each layer resolves a contested
+tile independently.
+
+### Cell accuracy is the wrong headline
+
+The grid is ~94% road and building. A belief that detected *nothing* would
+still score in the nineties. So `GridComparison` reports the three failure
+modes separately, because they cost completely different things:
+
+| failure | meaning | cost |
+|---|---|---|
+| missed hazard | believed clear, actually fire/debris | the vehicle drives into it |
+| phantom obstacle | believed blocked, actually clear | a detour; at worst an unreachable victim |
+| missed victim | never marked `VICTIM` | nobody is dispatched — the person is not rescued |
+
+Each is reported as the *set of tiles*, not a count, because "which tiles"
+is what you need to debug a mission that went wrong.
+
+### Fire is over-marked, and that is the safe direction
+
+The one disagreement a perfect detector cannot remove. Ground truth stamps a
+fire as a Euclidean **disc** (`mark_radius`); a camera reports an axis-aligned
+**box**, and a disc's bounding box includes its corners. With ground-truth
+annotations fed in as a perfect detector, fire recall is 1.000 and precision
+0.529 — every burning tile believed burning, plus a ring that is not.
+
+This closes the question 3.1 left open. Fire was flagged there as the only
+class with a fuzzy painted boundary, "worth revisiting if 3.3 shows the grid
+over-marking fire". It does, and the cause is not the weights: it is
+information loss inherent to bounding boxes, present at 0.529 precision
+before the model is involved at all.
+
+**The builder deliberately does not re-inscribe a disc.** It could estimate a
+centre and radius and carve the corners back off, and that would raise the
+number. It would also mean *removing* tiles from a hazard footprint on a
+guess — converting a harmless detour into a vehicle driving into a fire the
+moment the radius estimate is wrong. Over-marking a hazard is free; under-
+marking one is not. The asymmetry decides it, the same way it decided the
+merge rule in 3.2.
+
+### Measured against the real detector
+
+`scripts/evaluate_grid.py` runs the whole chain on the real city. `--perfect`
+substitutes ground-truth annotations, which isolates the projection and merge
+steps from the weights entirely.
+
+| | perfect detector | `labelfix` weights, degraded frames |
+|---|---|---|
+| cell agreement | 0.9733 | 0.9433 |
+| traversability agreement | 0.9783 | 0.9483 |
+| **missed hazards** | **0** | **0** |
+| **missed victims** | **0** | **0** |
+| phantom obstacles | 13 | 31 |
+| victim IoU | 1.000 | 1.000 |
+| debris IoU | 1.000 | 1.000 |
+| fire precision | 0.529 | 0.346 |
+| victims reachable by A\* | 4/4 | 4/4 |
+
+The real detector produces a **mission-equivalent** grid. Every difference
+from the perfect run lands in the fire class — real boxes are looser, so the
+bloat roughly doubles. Victims and debris are pixel-exact in both, which
+answers the question 3.2 left open: a real box drifting a pixel or two still
+projects to the same tile, because those markers are painted well inside one.
+
+### Across an evolving disaster
+
+Scored every 25 ticks of a real 184-tick mission (hazard seed 7, fresh
+degradation noise each sample, terrain surveyed only at tick 0):
+
+| tick | cells | traversability | missed hazards | phantom | missed victims | reachable |
+|---|---|---|---|---|---|---|
+| 0 | 0.9433 | 0.9483 | 0 | 31 | 0 | 4/4 |
+| 25 | 0.9533 | 0.9583 | 0 | 25 | 0 | 3/3 |
+| 50 | 0.9150 | 0.9350 | 0 | 39 | 0 | 2/2 |
+| 75 | 0.9033 | 0.9300 | 0 | 42 | 0 | 2/2 |
+| 100 | 0.9150 | 0.9383 | 0 | 37 | 0 | 2/2 |
+| 125 | 0.8967 | 0.9133 | 0 | 52 | 0 | 1/1 |
+| 150 | 0.8800 | 0.8983 | 0 | 61 | 0 | 0/0 |
+| 175 | 0.9100 | 0.9250 | 0 | 45 | 0 | 0/0 |
+
+Two buildings collapsed during the run, at (23, 16) and (23, 5). Both were
+detected despite the survey being stale — the split works.
+
+Never a missed hazard, never a missed victim, every remaining trapped victim
+reachable at every sample. Agreement decays from 0.948 to 0.898 as fires
+spread, and every point of that decay is fire bloat: more fire means more
+bounding-box corners.
+
+**What this does not yet show.** The mission above drove on the *ground-truth*
+grid; the belief grid was scored alongside it, not steering. Swapping the
+producer inside `MissionController` is 3.4/3.5, and until that runs there is
+no claim here that a mission *succeeds* on detector-derived perception — only
+that the map it would have been given was good enough to have succeeded.
+
 ## Still open
 
 - **A recall floor worth defending.** `evaluate_yolo.py` uses 60% victim
@@ -295,15 +426,22 @@ over-marking fire.
   genuine limit.
 - **Mission success is not the same metric as recall.** Recall counts
   victims per *frame*; a mission only needs each victim found in *one* frame
-  of the many a camera takes while it drives there. The end-to-end number
-  cannot be measured until 3.2 and 3.3 exist, and it should be reported
-  alongside recall rather than instead of it.
-- **Phases 3.3-3.5.** Building the occupancy grid from merged detections,
-  and proving a full mission runs on a detector-derived grid without
-  `navigation/` or `simulation/` changing.
-- **The merger has never seen a real detector's output.** It is tested with
-  ground-truth boxes, which are exact. Real boxes are a pixel or two off, and
-  a victim box that drifts across a tile boundary would project to two tiles
-  instead of one. That still merges correctly — the footprints overlap — but
-  the failure modes deserve a run against `labelfix` weights once 3.3 gives
-  something to measure the grid against.
+  of the many a camera takes while it drives there. 3.3 supplies the missing
+  half — "every victim on the map, every victim reachable" is measurable now,
+  and holds at every sample of an evolving mission. The number that is still
+  missing is the one where the belief grid actually *steers*, which is 3.4.
+- **Phases 3.4-3.5.** Proving a full mission runs on a detector-derived grid
+  without `navigation/` or `simulation/` changing. `MissionController.
+  refresh_grid` currently calls `OccupancyGrid.from_city_map` directly, so
+  the swap needs a grid-source port injected there — the one seam Phase 3
+  legitimately has to touch, and the reason ADR 0002 drew it where it did.
+- **Fire's bounding-box bloat is bounded but unmeasured at scale.** Phantom
+  obstacles grew from 31 to 61 as fires spread across one mission and never
+  blocked a route. A larger map, or a fire model that spreads further, could
+  seal a corridor. The failure would be loud (`unreachable`), not silent, but
+  no test currently searches for the point where it happens.
+- **The static survey has no expiry.** Terrain is read once at mission start.
+  That is correct for this simulation, where the only terrain change is a
+  collapse the cameras also see. A hazard that altered terrain *outside*
+  camera coverage would go unnoticed forever, and nothing currently asserts
+  that camera coverage stays at 1.0 for the life of a mission.

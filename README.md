@@ -5,12 +5,14 @@ Deep Learning project. See [`PROJECT.md`](PROJECT.md) for the full architecture,
 diagrams, phase roadmap, and API contracts. See [`CLAUDE.md`](CLAUDE.md) for the working
 rules this codebase follows.
 
-**Status:** Phases 1 and 2 complete; Phase 3.1 (YOLOv8n detection) in progress. A full autonomous rescue mission runs end to end
+**Status:** Phases 1 and 2 complete; Phase 3 complete through 3.3 (detection,
+cross-camera merging, and the detector-built occupancy grid). A full autonomous rescue mission runs end to end
 (occupancy grid → A\* routing → mission control → live HUD) in a city that changes
 underneath it: fire spreads, buildings collapse into the streets, and the command
 center replans around both. A four-camera CCTV network plus the vehicle's onboard view
-produce labelled frames for the AI phases. Phase 3 (YOLOv8n detection) is next. See
-PROJECT.md §10-11 for the phase breakdown and milestones.
+produce labelled frames for the AI phases, and those detections now build the
+occupancy grid the planner reasons over. Phase 3.4 wires that grid into the
+mission loop. See PROJECT.md §10-11 for the phase breakdown and milestones.
 
 ## Quick Start
 
@@ -158,6 +160,32 @@ purpose: fire merges on adjacency as well as overlap, victims and debris merge
 only on overlap — over-merging a hazard costs nothing, over-merging victims
 erases a person.
 
+**3.3 — building the map.** `OccupancyGridBuilder` turns merged detections into
+the `OccupancyGrid` A\* plans over, replacing `OccupancyGrid.from_city_map` as
+the producer; the ground-truth version stays as the answer key, and
+`GridComparison` marks the paper.
+
+```bash
+python scripts/evaluate_grid.py --device cuda   # score the real detector's grid
+python scripts/evaluate_grid.py --perfect       # isolate the pipeline from the weights
+```
+
+The static street plan is copied from the surveyed map and only `FIRE`,
+`DEBRIS` and `VICTIM` come from the cameras — so a building that collapses
+mid-mission has to be *detected*, because the survey is deliberately never
+refreshed.
+
+Cell accuracy is the wrong headline here: the grid is ~94% road and building,
+so a belief that detected nothing would still score in the nineties. What gets
+reported instead is the three failure modes, as tile sets rather than counts —
+a **missed hazard** drives the vehicle into a fire, a **phantom obstacle** costs
+a detour, and a **missed victim** means nobody is ever dispatched. Against the
+trained detector on degraded frames: **0 missed hazards, 0 missed victims, 4/4
+victims reachable**, holding at every sample of a full 184-tick mission through
+two collapses. Fire is over-marked by construction — a camera reports a box and
+ground truth stamps a disc — which is the safe direction, and the builder
+deliberately does not guess a radius to trim it back.
+
 ## Project Layout
 
 ```
@@ -168,7 +196,7 @@ src/sentry_ai/
   domain/      Entities, enums, CityMap, OccupancyGrid — pure Python, no frameworks
   interfaces/  Ports (ABCs): perception, sequence, navigation, world, decision fusion
   navigation/  A* global route planner (classical, not learned)
-  perception/  YOLO detector adapter + cross-camera detection merger
+  perception/  YOLO detector adapter, cross-camera merger, occupancy-grid builder
   simulation/  Tick engine, mission state machine, vehicle physics, hazards
   sensors/     Synthetic cameras: rasterizer, ground-truth labels, frame degradation
   rendering/   Pygame map renderer, HUD, keyboard input, mission window
