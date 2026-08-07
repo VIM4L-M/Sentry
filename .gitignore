@@ -23,6 +23,9 @@ htmlcov/
 # Trained model artifacts and large data (versioned separately, see PROJECT.md §15)
 models/**
 !models/.gitkeep
+# Checkpoints Ultralytics auto-downloads into the working directory when a
+# weights file is missing. They land at the repo root, not under models/.
+*.pt
 data/raw/**
 data/processed/**
 data/synthetic/**
