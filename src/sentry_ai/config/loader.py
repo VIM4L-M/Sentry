@@ -17,12 +17,14 @@ from sentry_ai.common.exceptions import AssetNotFoundError, ConfigurationError
 from sentry_ai.common.types import PathLike
 from sentry_ai.config.schema import (
     AppConfig,
+    AutoencoderTrainingConfig,
     BatteryConfig,
     CameraSpec,
     DebrisCollapseConfig,
     DegradationConfig,
     FireSpreadConfig,
     HazardConfig,
+    LstmTrainingConfig,
     MarkerScaleConfig,
     MissionConfig,
     OnboardCameraConfig,
@@ -209,6 +211,71 @@ class ConfigLoader:
             hsv_value=_as_float(data, "hsv_value", defaults.hsv_value),
             confidence=_as_float(data, "confidence", defaults.confidence),
             iou=_as_float(data, "iou", defaults.iou),
+            device=str(data.get("device", defaults.device)),
+            seed=_as_int(data, "seed", defaults.seed),
+        )
+
+    def load_autoencoder_config(self, relative_path: PathLike) -> AutoencoderTrainingConfig:
+        """Load ``configs/training/autoencoder.yaml`` into a :class:`AutoencoderTrainingConfig`.
+
+        Same optional-key policy and path resolution as :meth:`load_yolo_config`.
+
+        Raises:
+            AssetNotFoundError: If the file does not exist.
+            ConfigurationError: If a value has the wrong type.
+            ConfigValidationError: If a value is out of range.
+        """
+        data = self.load_yaml(relative_path)
+        defaults = AutoencoderTrainingConfig()
+        return AutoencoderTrainingConfig(
+            dataset_dir=self.resolve(str(data.get("dataset_dir", defaults.dataset_dir))),
+            runs_dir=self.resolve(str(data.get("runs_dir", defaults.runs_dir))),
+            base_channels=_as_int(data, "base_channels", defaults.base_channels),
+            depth=_as_int(data, "depth", defaults.depth),
+            skip_connections=_as_bool(data, "skip_connections", defaults.skip_connections),
+            crop_size=_as_int(data, "crop_size", defaults.crop_size),
+            severity_min=_as_float(data, "severity_min", defaults.severity_min),
+            severity_max=_as_float(data, "severity_max", defaults.severity_max),
+            epochs=_as_int(data, "epochs", defaults.epochs),
+            batch_size=_as_int(data, "batch_size", defaults.batch_size),
+            learning_rate=_as_float(data, "learning_rate", defaults.learning_rate),
+            weight_decay=_as_float(data, "weight_decay", defaults.weight_decay),
+            patience=_as_int(data, "patience", defaults.patience),
+            loss=str(data.get("loss", defaults.loss)),
+            num_workers=_as_int(data, "num_workers", defaults.num_workers),
+            device=str(data.get("device", defaults.device)),
+            seed=_as_int(data, "seed", defaults.seed),
+        )
+
+    def load_lstm_config(self, relative_path: PathLike) -> LstmTrainingConfig:
+        """Load ``configs/training/lstm.yaml`` into a :class:`LstmTrainingConfig`.
+
+        Same optional-key policy and path resolution as :meth:`load_yolo_config`.
+
+        Raises:
+            AssetNotFoundError: If the file does not exist.
+            ConfigurationError: If a value has the wrong type.
+            ConfigValidationError: If a value is out of range.
+        """
+        data = self.load_yaml(relative_path)
+        defaults = LstmTrainingConfig()
+        return LstmTrainingConfig(
+            trajectories_dir=self.resolve(
+                str(data.get("trajectories_dir", defaults.trajectories_dir))
+            ),
+            runs_dir=self.resolve(str(data.get("runs_dir", defaults.runs_dir))),
+            window=_as_int(data, "window", defaults.window),
+            horizon=_as_int(data, "horizon", defaults.horizon),
+            cone_degrees=_as_float(data, "cone_degrees", defaults.cone_degrees),
+            hidden_size=_as_int(data, "hidden_size", defaults.hidden_size),
+            num_layers=_as_int(data, "num_layers", defaults.num_layers),
+            dropout=_as_float(data, "dropout", defaults.dropout),
+            epochs=_as_int(data, "epochs", defaults.epochs),
+            batch_size=_as_int(data, "batch_size", defaults.batch_size),
+            learning_rate=_as_float(data, "learning_rate", defaults.learning_rate),
+            weight_decay=_as_float(data, "weight_decay", defaults.weight_decay),
+            patience=_as_int(data, "patience", defaults.patience),
+            class_weighting=_as_bool(data, "class_weighting", defaults.class_weighting),
             device=str(data.get("device", defaults.device)),
             seed=_as_int(data, "seed", defaults.seed),
         )

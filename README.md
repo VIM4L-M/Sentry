@@ -2,8 +2,8 @@
 
 **Autonomous Emergency Rescue Vehicle for Disaster Zones** — a simulation-based Applied
 Deep Learning project. See [`PROJECT.md`](PROJECT.md) for the full architecture,
-diagrams, phase roadmap, and API contracts. See [`CLAUDE.md`](CLAUDE.md) for the working
-rules this codebase follows.
+diagrams, phase roadmap, and API contracts — it is also where the working rules this
+codebase follows are written down (§2, §12, §16).
 
 **Status:** Phases 1, 2 and 3 complete. A full autonomous rescue mission runs end to end
 (occupancy grid → A\* routing → mission control → live HUD) in a city that changes
@@ -11,8 +11,11 @@ underneath it: fire spreads, buildings collapse into the streets, and the comman
 center replans around both. A four-camera CCTV network feeds a YOLOv8n detector
 whose output builds the occupancy grid the planner reasons over — the vehicle
 can complete a rescue on what it *sees* rather than on ground truth. Phase 4
-(denoising autoencoder) is next. See PROJECT.md §10-11 for the phase breakdown
-and milestones.
+(denoising autoencoder) is core-complete: the denoiser is built, trained, and slots
+in front of the detector with `--denoiser`, and milestone M4 was met on CPU-scale
+runs — pending confirmation at full length on a GPU. Phase 5 (behaviour LSTM) is
+core-complete and meets M5. See PROJECT.md §10-11 for the phase breakdown and
+milestones.
 
 ## Quick Start
 
@@ -40,6 +43,8 @@ Run a rescue mission (the vehicle plans routes and drives itself):
 python scripts/run_simulation.py                          # windowed, ground-truth map
 python scripts/run_simulation.py --headless               # no window, prints the outcome
 python scripts/run_simulation.py --perception --device cuda   # plan on what the cameras see
+python scripts/run_simulation.py --perception --denoiser models/autoencoder/sentry/best.pt \
+    --weights models/yolo/denoised/weights/best.pt      # see Phase 4 below
 ```
 
 | Key | Action |
@@ -207,6 +212,85 @@ matches `from_city_map` cell for cell, which a test asserts as an equality.
 The caveats, and the failure modes that remain, are in
 [`docs/architecture/phase3-detection.md`](docs/architecture/phase3-detection.md).
 
+## Phase 4 — Denoising Autoencoder (Unit IV)
+
+```bash
+python scripts/train_autoencoder.py --device cuda     # ~3M-parameter conv autoencoder
+python scripts/evaluate_denoiser.py                   # PSNR, input vs denoised
+python scripts/build_denoised_dataset.py              # dataset for the detector behind it
+python scripts/train_yolo.py --dataset data/denoised --name denoised --device cuda
+python scripts/evaluate_denoiser.py --detector models/yolo/labelfix/weights/best.pt \
+    --denoised-detector models/yolo/denoised/weights/best.pt   # the M4 comparison
+```
+
+`ConvDenoisingAutoencoder` implements `IDenoiser` and sits between the degrader
+and the detector:
+
+```
+SensorRig -> FrameDegrader -> IDenoiser -> YoloDetector -> DetectionMerger -> ...
+```
+
+**Training pairs are made on the fly.** Each sample is a random crop of a
+*clean* frame, rotated or mirrored, then corrupted at a random severity between
+0.5x and 2x the shipped smoke/blur/noise. Every epoch sees new smoke, and half
+of what it trains on is worse than anything the detector was trained on — which
+is where a denoiser can actually help. Validation uses the stored degraded
+frames, the exact input the detector gets.
+
+**Skip connections are on by default** (`--no-skip` trains without them for
+comparison). Without them an 8 px victim has to squeeze through a 1/8-resolution
+bottleneck, and comes back as a smudge.
+
+**The denoiser and the detector are a pair.** Put in front of the detector
+trained on smoky frames, the denoiser made detection *worse* — victim recall fell
+from 0.996 to 0.347 — because that detector learned what a victim looks like
+through smoke. Retrained on denoised frames, the pair wins where it should:
+
+| corruption | mAP50, no denoiser → with | victim recall, no denoiser → with |
+|---|---|---|
+| 1.0x (trained on) | 0.990 → 0.989 | 0.996 → 1.000 |
+| 2.0x | 0.862 → **0.890** | 0.868 → **0.950** |
+| none (clear day) | 0.923 → **0.989** | 0.978 → **1.000** |
+
+Short CPU runs (12 autoencoder epochs, 20 detector epochs) — to be confirmed at
+full length on a GPU.
+
+**PSNR is always reported next to the input's own PSNR.** And PSNR is not the
+goal: milestone M4 is about *detection*. `evaluate_denoiser.py --detector` scores
+the same detector on corrupted and on denoised frames, at severities 1.0, 1.5
+and 2.0. Design notes and results are in
+[`docs/architecture/phase4-denoising.md`](docs/architecture/phase4-denoising.md).
+
+## Phase 5 — Behaviour LSTM (Unit III)
+
+```bash
+python scripts/record_trajectories.py   # ~40 s: 200 missions, each from a random road tile
+python scripts/train_lstm.py            # ~1-2 min, CPU is fine
+python scripts/evaluate_lstm.py         # vs baselines: all held-out windows, then novel only
+```
+
+`LstmMotionPredictor` implements `IMotionPredictor`: from the last 8 ticks of
+vehicle state it predicts what the vehicle does over the next 4 — **advance**,
+**retreat**, **hold** or **divert** — judged against the way it was facing. The
+same rule labels the training data and runs the "keep doing the same" baseline,
+so model and baseline answer exactly the same question.
+
+**Scored by macro-F1, not accuracy.** Seven windows in ten are "advance", so
+"always advance" gets 0.69 accuracy while never predicting a turn; macro-F1 gives
+it 0.20.
+
+| held-out windows | best baseline macro-F1 | LSTM macro-F1 | LSTM accuracy |
+|---|---|---|---|
+| all (7,279) | 0.205 | **0.802** | 0.942 |
+| never seen in training (178) | 0.349 | **0.663** | 0.820 |
+
+**The first result was memorisation.** With every mission starting on the same
+tile, 99.4% of held-out windows were exact copies of training windows and the
+model scored 0.964 by remembering routes. Starts are now randomised, and
+`evaluate_lstm.py` also scores only the windows that repeat nothing — the second
+row. Details in
+[`docs/architecture/phase5-sequence.md`](docs/architecture/phase5-sequence.md).
+
 ## Project Layout
 
 ```
@@ -217,9 +301,13 @@ src/sentry_ai/
   domain/      Entities, enums, CityMap, OccupancyGrid — pure Python, no frameworks
   interfaces/  Ports (ABCs): perception, sequence, navigation, world, decision fusion
   navigation/  A* global route planner (classical, not learned)
-  perception/  YOLO adapter, cross-camera merger, occupancy-grid builder + scoring
+  perception/  YOLO adapter, denoising autoencoder, cross-camera merger,
+               occupancy-grid builder + scoring
   simulation/  Tick engine, mission state machine, vehicle physics, hazards
   sensors/     Synthetic cameras: rasterizer, ground-truth labels, frame degradation
+  sequence/    Behaviour classes and the LSTM motion predictor
+  training/    Offline only: dataset builder, YOLO + autoencoder + LSTM training,
+               trajectory recording, seeding, metric logs, checkpoints
   rendering/   Pygame map renderer, HUD, keyboard input, mission window
 scripts/     Composition roots / CLI entry points
 tests/       unit / integration / e2e, mirroring src/
@@ -259,7 +347,10 @@ built, owned by later phases).
 - [`docs/architecture/`](docs/architecture/) — per-phase design notes
   ([Phase 1](docs/architecture/phase1-foundation.md),
   [Phase 2 — mission loop](docs/architecture/phase2-simulation.md),
-  [Phase 2 — dynamic world & sensors](docs/architecture/phase2-dynamic-world-and-sensors.md))
+  [Phase 2 — dynamic world & sensors](docs/architecture/phase2-dynamic-world-and-sensors.md),
+  [Phase 3 — detection](docs/architecture/phase3-detection.md),
+  [Phase 4 — denoising](docs/architecture/phase4-denoising.md),
+  [Phase 5 — sequence](docs/architecture/phase5-sequence.md))
 - [`docs/adr/`](docs/adr/) — Architecture Decision Records
   ([0001 config](docs/adr/0001-config-driven-yaml-dataclasses.md),
   [0002 two-tier navigation](docs/adr/0002-two-tier-navigation-and-command-center.md))

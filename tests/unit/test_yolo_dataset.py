@@ -22,7 +22,10 @@ from sentry_ai.sensors.frame import YOLO_CLASSES
 from sentry_ai.sensors.palette import SensorPalette
 from sentry_ai.sensors.rig import SensorRig
 from sentry_ai.simulation.factory import Mission, build_mission
-from sentry_ai.training.dataset import (
+
+pytest.importorskip("cv2", reason="the dataset writer needs opencv (requirements-ml.txt)")
+
+from sentry_ai.training.dataset import (  # noqa: E402 - after the skip guard
     SPLITS,
     CaptureOptions,
     DatasetLayout,

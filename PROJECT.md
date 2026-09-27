@@ -1,7 +1,7 @@
 # SENTRY AI — Autonomous Emergency Rescue Vehicle for Disaster Zones
 
 **Type:** Semester-long Applied Deep Learning project (simulation-based)
-**Status:** Architecture approved — Phase 1 complete, Phase 2 core complete (see §10)
+**Status:** Phases 1-3 complete; Phases 4 and 5 core complete — M4 met on CPU-scale runs (GPU confirmation pending), M5 met (see §10)
 **Audience:** Single student developer, evaluated to production-software standards
 
 This document is the canonical architecture reference for SENTRY AI. It is intentionally
@@ -172,7 +172,6 @@ the learned one — because it only ever talks to the interface.
 ```
 sentry/
 ├── PROJECT.md                     # this document
-├── CLAUDE.md                      # working rules for AI-assisted development
 ├── README.md                      # quick start
 ├── pyproject.toml                 # packaging + tool config (pytest/mypy/ruff)
 ├── requirements.txt                # pinned core dependencies
@@ -185,12 +184,13 @@ sentry/
 │   ├── simulation.yaml             # tick rate, mission rules, planner, hazards
 │   ├── vehicle.yaml                # vehicle kinematics/limits
 │   ├── sensors.yaml                # camera layout, degradation, sensor palette
+│   ├── sensors_v75.yaml            # camera experiment (bigger markers), Phase 3.1
 │   ├── render.yaml                 # window size, palette, tile size
 │   ├── maps/
 │   │   └── city_default.yaml       # disaster city map definition
 │   └── training/                   # per-model hyperparameters (Phase 3-7)
-│       ├── yolo.yaml
-│       ├── autoencoder.yaml
+│       ├── yolo.yaml               # Phase 3
+│       ├── autoencoder.yaml        # Phase 4
 │       ├── lstm.yaml
 │       ├── dqn.yaml
 │       └── mlp_fusion.yaml
@@ -215,7 +215,7 @@ sentry/
 │       │   ├── perception.py       # IVisionDetector, IDenoiser
 │       │   ├── sequence.py         # IMotionPredictor
 │       │   ├── navigation.py       # IRoutePlanner, ILocalController
-│       │   ├── world.py            # IWorldProcess, WorldChange (hazards)
+│       │   ├── world.py            # IWorldProcess, WorldChange, IOccupancyGridSource
 │       │   └── decision.py         # IDecisionFusion
 │       ├── navigation/             # global routing adapters (classical, not learned)
 │       │   └── astar.py            # AStarPlanner
@@ -232,6 +232,7 @@ sentry/
 │       ├── simulation/             # Phase 2 — engine, mission, physics, hazards
 │       │   ├── engine.py
 │       │   ├── factory.py          # composes a mission; shared by every entry point
+│       │   ├── grid_source.py      # GroundTruthGridSource — the answer key
 │       │   ├── mission.py
 │       │   ├── hazards.py          # fire spread + debris collapse
 │       │   ├── events.py           # bounded mission event log
@@ -245,23 +246,42 @@ sentry/
 │       │   ├── degradation.py      # smoke/blur/noise -> Unit IV training pairs
 │       │   └── rig.py              # SensorRig: CCTV network + onboard camera
 │       ├── perception/             # Phase 3/4 — YOLO + autoencoder adapters
-│       │   └── yolo_detector.py    # YoloDetector implementing IVisionDetector
+│       │   ├── yolo_detector.py    # YoloDetector implementing IVisionDetector
+│       │   ├── merger.py           # DetectionMerger — four cameras, one belief (3.2)
+│       │   ├── grid_builder.py     # OccupancyGridBuilder — belief -> grid (3.3)
+│       │   ├── grid_metrics.py     # GridComparison — scores a belief grid (3.3)
+│       │   ├── grid_source.py      # DetectedGridSource — the camera pipeline (3.4)
+│       │   └── autoencoder.py      # ConvDenoisingAutoencoder implementing IDenoiser (4)
 │       ├── sequence/                # Phase 5 — LSTM adapter
+│       │   ├── behaviour.py        # what ADVANCE/RETREAT/HOLD/DIVERT mean + baseline
+│       │   └── lstm_predictor.py   # LstmMotionPredictor implementing IMotionPredictor
 │       ├── decision/                 # Phase 6/7 — DQN policy + MLP fusion adapters
 │       ├── training/                  # Phase 3-7 — training pipeline orchestration
 │       │   ├── dataset.py          # builds the YOLO dataset from seeded missions
-│       │   └── yolo.py             # fine-tuning + per-class evaluation
+│       │   ├── yolo.py             # fine-tuning + per-class evaluation
+│       │   ├── seed.py             # one call seeds random/numpy/torch
+│       │   ├── metrics.py          # CSV metric log, one row per epoch
+│       │   ├── checkpoint.py       # weights + metadata.json, saved together
+│       │   ├── denoising.py        # autoencoder dataset, training, PSNR evaluation
+│       │   ├── trajectories.py     # records vehicle states across seeded missions
+│       │   └── motion.py           # LSTM windows, baselines, macro-F1 report, trainer
 │       └── app/                        # Phase 9 — Streamlit dashboard
 │
 ├── scripts/                        # composition roots / CLI entry points
 │   ├── run_preview.py              # Phase 1: render static city map
 │   ├── run_simulation.py           # Phase 2: run a live/headless rescue mission
+│   ├── capture_dataset.py          # Phase 2: capture one mission's frames + labels
 │   ├── build_dataset.py            # Phase 3: write the synthetic perception dataset
 │   ├── fetch_pretrained.py         # Phase 3: download transfer-learning checkpoints
 │   ├── train_yolo.py               # Phase 3
 │   ├── evaluate_yolo.py            # Phase 3: per-class detector metrics
+│   ├── evaluate_grid.py            # Phase 3: score the detector-built occupancy grid
 │   ├── train_autoencoder.py        # Phase 4
+│   ├── evaluate_denoiser.py        # Phase 4: PSNR and detection with/without it
+│   ├── build_denoised_dataset.py   # Phase 4: dataset for a detector behind the denoiser
+│   ├── record_trajectories.py      # Phase 5: vehicle trajectories, split by mission
 │   ├── train_lstm.py               # Phase 5
+│   ├── evaluate_lstm.py            # Phase 5: vs baselines, all and novel windows
 │   ├── train_dqn.py                # Phase 6
 │   ├── train_mlp_fusion.py         # Phase 7
 │   └── run_app.py                  # Phase 9
@@ -283,8 +303,9 @@ sentry/
 ```
 
 Every package listed but not yet implemented is a **planned location**, not a stub —
-it is created with real content only in the phase that owns it, per `CLAUDE.md`'s "no
-placeholder code" rule.
+it is created with real content only in the phase that owns it. There is no
+placeholder code: an empty module that exists "for later" is a claim the codebase
+cannot back up.
 
 ---
 
@@ -353,7 +374,10 @@ Renderer.draw(CityMap, Vehicle, HUD state) ─► frame on screen
 replans only when a route is finished, obstructed, or invalidated:
 
 ```
-CityMap ──► OccupancyGrid.from_city_map()   (Phase 3: projected YOLO detections instead)
+IOccupancyGridSource.grid_for()   ground truth: OccupancyGrid.from_city_map()
+        │                        perception:   SensorRig -> FrameDegrader -> [IDenoiser]
+        │                                      -> IVisionDetector -> DetectionMerger
+        │                                      -> OccupancyGridBuilder
         │
         ▼
 IRoutePlanner.plan(grid, start, goal) ──► Route {waypoints, cost}   [A*, not learned]
@@ -375,12 +399,15 @@ MissionController.refresh_grid() ───────► belief map rebuilt imm
 MissionController.invalidate_route_if_affected(changed_tiles) ──► replan if cut
 ```
 
-**What exists today (Phase 2)** is that global loop, the tick loop with a
-deterministic `WaypointFollower` standing in for `ILocalController`, the hazard
-processes, and the sensor rig producing labelled frames. `IDenoiser`,
-`IVisionDetector`, `IMotionPredictor`, and `IDecisionFusion` are still unfulfilled
-interfaces — frames are captured and written to disk, but nothing consumes them in
-the live loop yet.
+**What exists today (Phases 3-5)** is that global loop,
+the tick loop with a deterministic `WaypointFollower` standing in for
+`ILocalController`, the hazard processes, and the sensor rig. With `--perception`
+the command center's map is built from the cameras: frames are degraded, optionally
+denoised by the Phase 4 autoencoder, run through YOLOv8n, merged across the four
+overlapping CCTV views, and turned into the occupancy grid A\* plans over.
+`IMotionPredictor` is implemented by the Phase 5 LSTM but runs offline only — its
+consumer is Phase 7's fusion network. `IDecisionFusion` is still unfulfilled, and the
+per-tick move is still the waypoint follower rather than a learned policy.
 
 ---
 
@@ -662,9 +689,9 @@ sequenceDiagram
 |---|---|---|---|---|
 | 1 | Foundation & Core Architecture | 1-2 | — (infra) | ✅ **Complete** |
 | 2 | Simulation Engine, Occupancy Grid & A* Routing | 3-4 | — (infra) | ✅ **Complete** |
-| 3 | Computer Vision — Detection | 5-6 | Unit II | 🚧 3.1 in progress |
-| 4 | Representation Learning — Denoising AE | 7 | Unit IV | ⏳ Not started |
-| 5 | Sequence Modeling — LSTM | 8 | Unit III | ⏳ Not started |
+| 3 | Computer Vision — Detection | 5-6 | Unit II | ✅ **Complete** |
+| 4 | Representation Learning — Denoising AE | 7 | Unit IV | 🚧 Core complete — GPU confirmation pending |
+| 5 | Sequence Modeling — LSTM | 8 | Unit III | ✅ **Core complete** — consumed from Phase 7 |
 | 6 | Reinforcement Learning — DQN | 9-11 | Unit V | ⏳ Not started |
 | 7 | Decision Fusion — MLP | 12 | Unit I | ⏳ Not started |
 | 8 | End-to-End Autonomous Integration | 13 | All | ⏳ Not started |
@@ -733,7 +760,18 @@ Sensors (`sensors/`):
 
 Not built, and deliberately so: weather, which the specification lists as optional.
 
-### Phase 3 — Computer Vision (Unit II)
+### Phase 3 — Computer Vision (Unit II) ✅
+
+Design notes and the full experiment log:
+[`docs/architecture/phase3-detection.md`](docs/architecture/phase3-detection.md).
+
+Outcome, measured on missions the detector saw no frame of:
+
+| | result |
+|---|---|
+| Detector (`labelfix` weights) | mAP50 **0.991**, victim recall **1.000** |
+| Grid built from YOLO output | identical to `from_city_map` on the shipped map, cell for cell |
+| Missions on perception, six hazard seeds | 4 rescued, 0 lost, 0 unreachable — same as ground truth |
 
 The dataset already exists: `scripts/capture_dataset.py` emits degraded frames, their
 clean counterparts, and YOLO label files, with class ids fixed by
@@ -775,19 +813,60 @@ Phase 4's autoencoder slots in as `SensorRig → FrameDegrader → IDenoiser →
 IVisionDetector` without moving anything. Until Phase 4 exists, 3.1 trains directly on
 degraded frames, which is the honest baseline the denoiser has to beat.
 
-### Phase 4 — Representation Learning (Unit IV)
+### Phase 4 — Representation Learning (Unit IV) 🚧
+
+Design notes: [`docs/architecture/phase4-denoising.md`](docs/architecture/phase4-denoising.md).
 
 Training pairs already exist: `FrameDegrader.degrade_pair` returns a corrupted frame
 and its pixel-aligned clean original.
 
 - Convolutional Denoising Autoencoder (PyTorch) trained to reconstruct clean frames
-- `ConvDenoisingAutoencoder` adapter implementing `IDenoiser`, inserted upstream of the detector
+  (`perception/autoencoder.py`, `training/denoising.py`, `scripts/train_autoencoder.py`)
+- `ConvDenoisingAutoencoder` adapter implementing `IDenoiser`, inserted upstream of the
+  detector: `SensorRig → FrameDegrader → IDenoiser → IVisionDetector`
+- Shared training infrastructure every later phase reuses: `training/seed.py`,
+  `training/metrics.py`, `training/checkpoint.py`
+- `scripts/evaluate_denoiser.py` — reconstruction PSNR and, given detector weights,
+  mAP with and without the denoiser at increasing corruption: the M4 measurement
+- `scripts/build_denoised_dataset.py` — the detector behind the denoiser must be
+  trained on denoised frames; the smoky-trained one gets *worse* when handed them
 
-### Phase 5 — Sequence Modeling (Unit III)
+Outcome so far (short CPU runs, held-out missions):
 
-- Trajectory dataset collected from Phase 2 scripted/manual runs (state history windows)
-- LSTM predicting short-horizon movement / behaviour class
-- `LstmMotionPredictor` adapter implementing `IMotionPredictor`
+| | result |
+|---|---|
+| Denoiser PSNR, shipped corruption / double | 22.4 → 29.9 dB / 16.9 → 28.0 dB |
+| Denoiser + smoky-trained detector | worse everywhere — victim recall 0.35 at 1.0x |
+| Denoiser + detector trained on denoised frames, at 2x corruption | mAP50 0.862 → **0.890**, victim recall 0.868 → **0.950** |
+
+Remaining: reproduce at full training length on a GPU, and run missions across
+hazard seeds on the denoised pipeline.
+
+### Phase 5 — Sequence Modeling (Unit III) ✅
+
+Design notes: [`docs/architecture/phase5-sequence.md`](docs/architecture/phase5-sequence.md).
+
+- Trajectory dataset: 200 seeded missions, each from a random road tile, split by
+  mission (`scripts/record_trajectories.py`)
+- `sequence/behaviour.py` defines the four classes egocentrically — HOLD, or net
+  movement within 30 degrees ahead (ADVANCE), behind (RETREAT), or neither (DIVERT)
+  over the next 4 ticks. The same rule labels the data and runs the baseline
+- 2-layer LSTM (52k parameters) over 8 ticks of 7 features;
+  `LstmMotionPredictor` implements `IMotionPredictor` and also exposes the full
+  class distribution for Phase 7
+- Scored by macro-F1 against "always advance" and "keep doing the same", on all
+  held-out windows *and* on only the ones never seen in training
+
+Outcome (CPU, ~1 minute):
+
+| held-out windows | best baseline macro-F1 | LSTM macro-F1 | LSTM accuracy |
+|---|---|---|---|
+| all (7,279) | 0.205 | **0.802** | 0.942 |
+| novel only (178) | 0.349 | **0.663** | 0.820 |
+
+A first run scored 0.964 — until 99.4% of held-out windows proved to be copies of
+training windows (one start tile, one route). Randomised starts and the novel-window
+score are the correction; the design notes record it.
 
 ### Phase 6 — Reinforcement Learning (Unit V)
 
@@ -835,16 +914,19 @@ and its pixel-aligned clean original.
       complete mission runs unattended. *(Phase 2)*
 - [x] **M2b — Changing City**: fire spreads, obstacles appear mid-mission, and the
       command center replans around them; `SensorRig` emits camera frames. *(Phase 2)*
-- [ ] **M3a — Sees**: YOLOv8n detects victims/fire/obstacles in simulated camera frames
+- [x] **M3a — Sees**: YOLOv8n detects victims/fire/obstacles in simulated camera frames
       above target mAP. *(Phase 3.1)*
-- [ ] **M3b — Sees Once**: detections from the four overlapping CCTV views merge into
+- [x] **M3b — Sees Once**: detections from the four overlapping CCTV views merge into
       one world-space belief; a victim in two frames is one victim. *(Phase 3.2-3.3)*
-- [ ] **M3c — Drives On What It Sees**: a full mission completes on a detector-derived
+- [x] **M3c — Drives On What It Sees**: a full mission completes on a detector-derived
       occupancy grid, with `navigation/` and `simulation/` unmodified. *(Phase 3.4-3.5)*
-- [ ] **M4 — Sees Clearly**: denoising autoencoder measurably improves detection mAP
-      under injected noise. *(Phase 4)*
-- [ ] **M5 — Anticipates**: LSTM behaviour predictions beat a naive baseline on held-out
-      trajectories. *(Phase 5)*
+- [x] **M4 — Sees Clearly**: denoising autoencoder measurably improves detection mAP
+      under injected noise. *(Phase 4 — met at 2x corruption with a detector trained on
+      denoised frames; CPU-scale runs, GPU confirmation pending. See
+      [phase4-denoising.md](docs/architecture/phase4-denoising.md).)*
+- [x] **M5 — Anticipates**: LSTM behaviour predictions beat a naive baseline on held-out
+      trajectories. *(Phase 5 — macro-F1 0.802 vs 0.205 on all held-out windows, and
+      0.663 vs 0.349 on windows never seen in training.)*
 - [ ] **M6 — Learns to Drive**: DQN agent reaches a defined rescue-rate threshold in
       `SentryEnv` without human control. *(Phase 6)*
 - [ ] **M7 — Decides**: MLP fusion outperforms any single upstream signal on a fused
@@ -873,6 +955,10 @@ class IVisionDetector(ABC):
 # interfaces/sequence.py
 class IMotionPredictor(ABC):
     def predict(self, state_history: Sequence[VehicleState]) -> BehaviourSignal: ...
+
+# interfaces/world.py  — where the planner's map comes from (Phase 3.4)
+class IOccupancyGridSource(ABC):
+    def grid_for(self, city_map: CityMap, vehicle_position: Position) -> OccupancyGrid: ...
 
 # interfaces/navigation.py  — two tiers, see ADR 0002
 class IRoutePlanner(ABC):                      # global: A*, deterministic
@@ -1051,7 +1137,7 @@ own `scripts/train_*.py`:
 2. Assemble/load dataset
      - Phase 3 (YOLO): synthetic frames + auto-generated labels from CityMap ground truth
      - Phase 4 (AE):   synthetic frames + injected noise, self-supervised (input=noisy, target=clean)
-     - Phase 5 (LSTM): trajectory windows recorded from Phase 2 scripted/manual runs
+     - Phase 5 (LSTM): trajectory windows recorded from seeded missions, random starts
      - Phase 6 (DQN):  online rollouts inside SentryEnv (Gymnasium)
      - Phase 7 (MLP):  logged tuples of (detector_out, lstm_out, dqn_out) -> fused label/reward
 3. Build model from config (architecture hyperparameters never hardcoded)
@@ -1108,7 +1194,9 @@ Pytest, three tiers, mirrored under `tests/`:
 
 Rules:
 - Every module merged in a phase ships with unit tests for that phase in the same
-  change (per `CLAUDE.md`: "every feature must have unit tests").
+  change — every feature has unit tests.
+- Tests that need the ML stack (Torch, Ultralytics, OpenCV) skip cleanly when it is
+  not installed, so the core suite runs on `requirements.txt` alone.
 - AI adapters are tested against interface conformance (mock inputs of the right shape,
   correct output dataclass type/fields) — not against training-quality assertions
   (those live in the training pipeline's own evaluation step, §14).
@@ -1126,9 +1214,13 @@ docs/
 ├── architecture/
 │   ├── phase1-foundation.md     # design decisions specific to Phase 1
 │   ├── phase2-simulation.md     # ... one per phase, added as that phase lands
-│   └── ...
+│   ├── phase2-dynamic-world-and-sensors.md
+│   ├── phase3-detection.md
+│   ├── phase4-denoising.md
+│   └── phase5-sequence.md
 ├── adr/                          # Architecture Decision Records
-│   └── 0001-config-driven-yaml-dataclasses.md
+│   ├── 0001-config-driven-yaml-dataclasses.md
+│   └── 0002-two-tier-navigation-and-command-center.md
 └── api/                          # generated or hand-written interface reference
 ```
 

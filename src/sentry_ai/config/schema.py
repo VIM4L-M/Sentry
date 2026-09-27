@@ -500,6 +500,29 @@ class DegradationConfig:
                 f"sensors.degradation.noise_std must be non-negative, got {self.noise_std}"
             )
 
+    def scaled(self, severity: float) -> DegradationConfig:
+        """The same corruption, made ``severity`` times as strong.
+
+        ``1.0`` is this config unchanged and ``0.0`` is a clean frame. Smoke
+        opacity saturates at fully opaque; blur passes round half up, so a
+        radius-1 blur becomes radius 2 at severity 1.5. The smoke colour is a
+        property of the smoke, not of how much there is, so it never scales.
+
+        This is how the denoiser is trained on more than the one corruption
+        level the dataset was captured at, and how it is stress-tested beyond
+        it.
+        """
+        if severity < 0.0:
+            raise ConfigValidationError(
+                f"degradation severity must be non-negative, got {severity}"
+            )
+        return DegradationConfig(
+            smoke_density=min(1.0, self.smoke_density * severity),
+            smoke_grey=self.smoke_grey,
+            blur_radius=int(self.blur_radius * severity + 0.5),
+            noise_std=self.noise_std * severity,
+        )
+
 
 @dataclass(frozen=True)
 class SensorConfig:
@@ -606,6 +629,187 @@ class YoloTrainingConfig:
                 raise ConfigValidationError(
                     f"yolo.{name} must be within 0.0-1.0, got {fraction}"
                 )
+
+
+#: Reconstruction losses the autoencoder trainer knows how to build.
+AUTOENCODER_LOSSES: tuple[str, ...] = ("l1", "mse")
+
+
+@dataclass(frozen=True)
+class AutoencoderTrainingConfig:
+    """Architecture and hyperparameters for the denoising autoencoder (Unit IV).
+
+    Attributes:
+        dataset_dir: The dataset ``build_dataset.py`` wrote. Training reads
+            its ``clean/train`` frames and corrupts them on the fly;
+            validation reads the stored ``images/val``/``clean/val`` pairs,
+            which are exactly what the detector is shown.
+        runs_dir: Where checkpoints and the metric log are written.
+        base_channels: Feature maps at full resolution. Each level down
+            doubles it.
+        depth: Number of stride-2 downsamplings. Every level halves the
+            resolution the bottleneck works at.
+        skip_connections: Carry each encoder level's features across to the
+            matching decoder level. See docs/architecture/phase4-denoising.md
+            for why this defaults to on, and why it is still a switch.
+        crop_size: Side of the square training crops, in pixels. Must fit
+            inside the smallest frame (the 144 px onboard view) and divide
+            by ``2 ** depth``.
+        severity_min: Weakest corruption sampled for a training crop, as a
+            multiple of ``sensors.degradation``.
+        severity_max: Strongest corruption sampled. Training above 1.0 is
+            what lets the denoiser cope with more smoke than the dataset was
+            captured in.
+        epochs: Maximum passes over the training frames.
+        batch_size: Crops per optimisation step.
+        learning_rate: Adam step size.
+        weight_decay: Adam L2 penalty. ``0.0`` disables it.
+        patience: Epochs without a validation improvement before stopping.
+            ``0`` disables early stopping.
+        loss: ``"l1"`` or ``"mse"``.
+        num_workers: DataLoader worker processes. ``0`` loads in the
+            training process, which is the safe choice on Windows.
+        device: ``"auto"``, ``"cpu"``, ``"cuda"``, or a device index.
+        seed: Fixed so a run is reproducible, including every crop and
+            every corruption.
+    """
+
+    dataset_dir: Path = Path("data/synthetic")
+    runs_dir: Path = Path("models/autoencoder")
+    base_channels: int = 32
+    depth: int = 3
+    skip_connections: bool = True
+    crop_size: int = 128
+    severity_min: float = 0.5
+    severity_max: float = 2.0
+    epochs: int = 40
+    batch_size: int = 16
+    learning_rate: float = 1e-3
+    weight_decay: float = 0.0
+    patience: int = 8
+    loss: str = "l1"
+    num_workers: int = 2
+    device: str = "auto"
+    seed: int = 20250807
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("base_channels", self.base_channels),
+            ("depth", self.depth),
+            ("crop_size", self.crop_size),
+            ("epochs", self.epochs),
+            ("batch_size", self.batch_size),
+        ):
+            if value <= 0:
+                raise ConfigValidationError(f"autoencoder.{name} must be positive, got {value}")
+        for name, value in (("patience", self.patience), ("num_workers", self.num_workers)):
+            if value < 0:
+                raise ConfigValidationError(
+                    f"autoencoder.{name} must be non-negative, got {value}"
+                )
+        if self.crop_size % (2**self.depth) != 0:
+            raise ConfigValidationError(
+                f"autoencoder.crop_size must be a multiple of 2 ** depth "
+                f"({2**self.depth}), got {self.crop_size}"
+            )
+        if not 0.0 <= self.severity_min <= self.severity_max:
+            raise ConfigValidationError(
+                f"autoencoder.severity_min/max must satisfy 0 <= min <= max, "
+                f"got {self.severity_min}/{self.severity_max}"
+            )
+        if self.learning_rate <= 0.0:
+            raise ConfigValidationError(
+                f"autoencoder.learning_rate must be positive, got {self.learning_rate}"
+            )
+        if self.weight_decay < 0.0:
+            raise ConfigValidationError(
+                f"autoencoder.weight_decay must be non-negative, got {self.weight_decay}"
+            )
+        if self.loss not in AUTOENCODER_LOSSES:
+            raise ConfigValidationError(
+                f"autoencoder.loss must be one of {AUTOENCODER_LOSSES}, got {self.loss!r}"
+            )
+
+
+@dataclass(frozen=True)
+class LstmTrainingConfig:
+    """Architecture and hyperparameters for the behaviour LSTM (Unit III).
+
+    Attributes:
+        trajectories_dir: Where ``record_trajectories.py`` wrote the
+            ``train.json`` and ``val.json`` trajectory files.
+        runs_dir: Where checkpoints and the metric log are written.
+        window: States the model sees per prediction, oldest first.
+        horizon: How many ticks ahead the predicted behaviour spans. Must be
+            shorter than ``window`` so the persistence baseline — which
+            looks back ``horizon`` ticks — can be scored on the same input.
+        cone_degrees: Half-angle of the ADVANCE/RETREAT cones; see
+            :mod:`sentry_ai.sequence.behaviour`.
+        hidden_size: LSTM hidden units per layer.
+        num_layers: Stacked LSTM layers.
+        dropout: Dropout between LSTM layers and before the classifier.
+        epochs: Maximum passes over the training windows.
+        batch_size: Windows per optimisation step.
+        learning_rate: Adam step size.
+        weight_decay: Adam L2 penalty. ``0.0`` disables it.
+        patience: Epochs without a validation improvement before stopping.
+            ``0`` disables early stopping.
+        class_weighting: Weight the loss by square-root inverse class
+            frequency. About seven in ten windows are ADVANCE; unweighted,
+            the cheapest way to a low loss is to say ADVANCE every time.
+        device: ``"auto"``, ``"cpu"``, ``"cuda"``, or a device index.
+        seed: Fixed so a run is reproducible.
+    """
+
+    trajectories_dir: Path = Path("data/trajectories")
+    runs_dir: Path = Path("models/lstm")
+    window: int = 8
+    horizon: int = 4
+    cone_degrees: float = 30.0
+    hidden_size: int = 64
+    num_layers: int = 2
+    dropout: float = 0.2
+    epochs: int = 40
+    batch_size: int = 64
+    learning_rate: float = 1e-3
+    weight_decay: float = 0.0
+    patience: int = 8
+    class_weighting: bool = True
+    device: str = "auto"
+    seed: int = 20250808
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("window", self.window),
+            ("horizon", self.horizon),
+            ("hidden_size", self.hidden_size),
+            ("num_layers", self.num_layers),
+            ("epochs", self.epochs),
+            ("batch_size", self.batch_size),
+        ):
+            if value <= 0:
+                raise ConfigValidationError(f"lstm.{name} must be positive, got {value}")
+        if self.horizon >= self.window:
+            raise ConfigValidationError(
+                f"lstm.horizon ({self.horizon}) must be shorter than lstm.window "
+                f"({self.window}), or the persistence baseline cannot see far enough back"
+            )
+        if not 0.0 < self.cone_degrees < 90.0:
+            raise ConfigValidationError(
+                f"lstm.cone_degrees must be within (0, 90), got {self.cone_degrees}"
+            )
+        if not 0.0 <= self.dropout < 1.0:
+            raise ConfigValidationError(f"lstm.dropout must be within [0, 1), got {self.dropout}")
+        if self.learning_rate <= 0.0:
+            raise ConfigValidationError(
+                f"lstm.learning_rate must be positive, got {self.learning_rate}"
+            )
+        if self.weight_decay < 0.0:
+            raise ConfigValidationError(
+                f"lstm.weight_decay must be non-negative, got {self.weight_decay}"
+            )
+        if self.patience < 0:
+            raise ConfigValidationError(f"lstm.patience must be non-negative, got {self.patience}")
 
 
 @dataclass(frozen=True)

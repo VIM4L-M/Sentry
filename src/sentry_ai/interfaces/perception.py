@@ -1,8 +1,8 @@
 """Ports for the perception pipeline: denoising (Unit IV) and detection (Unit II).
 
 Concrete adapters — ``ConvDenoisingAutoencoder`` (Phase 4) and
-``YoloDetector`` (Phase 3) — will live in ``sentry_ai.perception`` and
-implement these ABCs. This file defines the contract only.
+``YoloDetector`` (Phase 3) — live in ``sentry_ai.perception`` and implement
+these ABCs. This file defines the contract only.
 """
 
 from __future__ import annotations

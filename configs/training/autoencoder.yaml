@@ -1,0 +1,57 @@
+# Convolutional denoising autoencoder for Unit IV (Representation Learning).
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_autoencoder_config().
+# Every key is optional — an omitted key uses the dataclass default in
+# sentry_ai.config.schema.
+
+# The dataset scripts/build_dataset.py wrote — the same one the detector
+# trains on. Training reads clean/train and corrupts it on the fly;
+# validation reads the stored images/val + clean/val pairs, which are
+# exactly the frames the detector is shown.
+dataset_dir: "data/synthetic"
+runs_dir: "models/autoencoder"
+
+# Architecture. Channels double at every level down: with these values the
+# encoder runs 32 -> 64 -> 128 -> 256 feature maps, about 3M parameters,
+# comfortable on a 4 GB laptop GPU.
+base_channels: 32
+depth: 3
+
+# Skip connections carry fine detail around the bottleneck. Without them an
+# 8 px victim has to survive being squeezed to a single 1/8-resolution cell
+# and comes back as a pink smudge. Kept as a switch so the pure-bottleneck
+# variant can be measured rather than argued about — see
+# docs/architecture/phase4-denoising.md.
+skip_connections: true
+
+# Square training crops. 128 fits inside the smallest frame (the 144 px
+# onboard view) and divides by 2 ** depth. Crops rather than whole frames so
+# every batch is one shape, and so each epoch sees a different part of
+# every frame.
+crop_size: 128
+
+# Corruption strength per training crop, drawn uniformly from this range as
+# a multiple of sensors.degradation. Training only at 1.0 would teach the
+# network one fixed amount of smoke; going to 2.0 is what lets it hold up
+# when a fire makes things worse than the dataset was captured in.
+severity_min: 0.5
+severity_max: 2.0
+
+epochs: 40
+batch_size: 16
+learning_rate: 0.001
+weight_decay: 0.0
+patience: 8           # stop early if validation loss stops improving
+
+# L1 rather than MSE: squared error is dominated by the few pixels that are
+# badly wrong, and minimising it rewards a safe grey average — which is
+# exactly the blur that erases small markers.
+loss: "l1"
+
+# DataLoader workers. Set to 0 on Windows if worker start-up misbehaves.
+num_workers: 2
+
+# "cpu", "cuda", or a device index. "auto" picks CUDA when Torch reports it.
+device: "auto"
+
+# Fixed so a run is reproducible — including every crop and corruption.
+seed: 20250807

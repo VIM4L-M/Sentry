@@ -47,11 +47,20 @@ class FrameDegrader:
 
     def degrade(self, frame: CameraFrame) -> CameraFrame:
         """Return a corrupted copy of ``frame``, annotations untouched."""
-        pixels = frame.pixels.astype(np.float32)
-        pixels = self._blur(pixels)
-        pixels = self._add_smoke(pixels)
-        pixels = self._add_noise(pixels)
-        return frame.with_pixels(np.clip(pixels, 0, 255).astype(np.uint8))
+        return frame.with_pixels(self.degrade_pixels(frame.pixels))
+
+    def degrade_pixels(self, pixels: NDArray[np.uint8]) -> NDArray[np.uint8]:
+        """Corrupt a bare ``(h, w, 3)`` image. The input is not modified.
+
+        The same corruption as :meth:`degrade`, for callers that hold pixels
+        without a camera — the autoencoder's training crops, which are cut
+        out of a frame and so no longer match any camera's geometry.
+        """
+        corrupted = pixels.astype(np.float32)
+        corrupted = self._blur(corrupted)
+        corrupted = self._add_smoke(corrupted)
+        corrupted = self._add_noise(corrupted)
+        return np.clip(corrupted, 0, 255).astype(np.uint8)
 
     def degrade_pair(self, frame: CameraFrame) -> tuple[CameraFrame, CameraFrame]:
         """A ``(corrupted, clean)`` pair — the training sample for Unit IV."""

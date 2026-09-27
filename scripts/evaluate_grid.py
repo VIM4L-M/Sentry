@@ -20,6 +20,7 @@ Usage:
     python scripts/evaluate_grid.py --weights models/yolo/labelfix/weights/best.pt
     python scripts/evaluate_grid.py --device cuda
     python scripts/evaluate_grid.py --perfect   # ground truth instead of the model
+    python scripts/evaluate_grid.py --denoiser models/autoencoder/sentry/best.pt
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from sentry_ai.common.logging_config import get_logger, setup_logging
 from sentry_ai.config.loader import ConfigLoader
 from sentry_ai.domain.map import CityMap
 from sentry_ai.domain.occupancy import OccupancyGrid
+from sentry_ai.interfaces.perception import IDenoiser
 from sentry_ai.navigation.astar import AStarPlanner
 from sentry_ai.perception.grid_builder import OccupancyGridBuilder
 from sentry_ai.perception.grid_metrics import GridComparison
@@ -69,6 +71,7 @@ def main() -> int:
         observer=_observer(loader, args),
         builder=OccupancyGridBuilder.from_city_map(city_map, min_confidence=args.min_confidence),
         degrader=FrameDegrader(sensor_config.degradation, np.random.default_rng(args.seed)),
+        denoiser=_denoiser(loader, args),
     )
     belief = source.grid_for(city_map, city_map.vehicle.position)
 
@@ -98,6 +101,16 @@ def _observer(loader: ConfigLoader, args: argparse.Namespace) -> IFrameObserver:
             device=args.device,
         )
     )
+
+
+def _denoiser(loader: ConfigLoader, args: argparse.Namespace) -> IDenoiser | None:
+    """The Phase 4 autoencoder between degrader and detector, if one was named."""
+    if args.denoiser is None:
+        return None
+
+    from sentry_ai.perception.autoencoder import ConvDenoisingAutoencoder  # noqa: PLC0415
+
+    return ConvDenoisingAutoencoder.from_checkpoint(loader.resolve(args.denoiser), args.device)
 
 
 def _report(
@@ -163,6 +176,10 @@ def _parse_args() -> argparse.Namespace:
         "--image-size", type=int, default=256, help="Inference resolution; must match training."
     )
     parser.add_argument("--seed", type=int, default=0, help="Seed for the frame degrader.")
+    parser.add_argument(
+        "--denoiser",
+        help="Denoising autoencoder checkpoint (Phase 4), applied before the detector.",
+    )
     return parser.parse_args()
 
 

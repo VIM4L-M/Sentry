@@ -12,6 +12,7 @@ Reading files stays with the composition root; wiring lives here.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from sentry_ai.config.schema import SimulationConfig, VehicleConfig
@@ -42,6 +43,12 @@ class Mission:
     def controller(self) -> MissionController:
         """The command center running this mission."""
         return self.engine.mission
+
+
+#: Builds a fresh, unstarted mission for a hazard seed. Supplied by a
+#: composition root, so the code that runs many missions — dataset
+#: capture, trajectory recording — never reads a config file itself.
+MissionSource = Callable[[int], Mission]
 
 
 def build_mission(

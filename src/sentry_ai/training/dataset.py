@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import shutil
 from collections import Counter
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,21 +26,19 @@ import numpy as np
 import yaml
 from numpy.typing import NDArray
 
+from sentry_ai.common.exceptions import AssetNotFoundError
 from sentry_ai.common.logging_config import get_logger
 from sentry_ai.domain.map import CityMap
 from sentry_ai.sensors.degradation import FrameDegrader
 from sentry_ai.sensors.frame import YOLO_CLASSES
 from sentry_ai.sensors.rig import SensorRig
-from sentry_ai.simulation.factory import Mission
+from sentry_ai.simulation.factory import Mission, MissionSource
 
 logger = get_logger(__name__)
 
 #: The splits written, in the order missions are assigned to them.
 SPLITS: tuple[str, ...] = ("train", "val")
 
-#: Builds an unstarted mission for a given hazard seed. Supplied by the
-#: composition root so this module never reads a config file.
-MissionSource = Callable[[int], Mission]
 
 
 @dataclass(frozen=True)
@@ -223,9 +220,9 @@ class YoloDatasetBuilder:
             lines = frame.to_yolo_lines()
 
             degraded = self._degrader.degrade(frame)
-            _write_png(self._layout.images(split) / f"{stem}.png", degraded.pixels)
-            _write_png(self._layout.clean(split) / f"{stem}.png", frame.pixels)
-            _write_text(self._layout.labels(split) / f"{stem}.txt", "\n".join(lines))
+            write_png(self._layout.images(split) / f"{stem}.png", degraded.pixels)
+            write_png(self._layout.clean(split) / f"{stem}.png", frame.pixels)
+            write_text(self._layout.labels(split) / f"{stem}.txt", "\n".join(lines))
             stats.record(split, lines)
 
     def _clear(self) -> None:
@@ -249,10 +246,23 @@ class YoloDatasetBuilder:
             "val": "images/val",
             "names": {index: kind.value for index, kind in enumerate(YOLO_CLASSES)},
         }
-        _write_text(self._layout.data_yaml, yaml.safe_dump(document, sort_keys=False).strip())
+        write_text(self._layout.data_yaml, yaml.safe_dump(document, sort_keys=False).strip())
 
 
-def _write_png(path: Path, pixels: NDArray[np.uint8]) -> None:
+def read_png(path: Path) -> NDArray[np.uint8]:
+    """Load a PNG written by :func:`write_png` back as an ``(h, w, 3)`` RGB array.
+
+    Raises:
+        AssetNotFoundError: If the file is missing or not a readable image —
+            OpenCV reports both by returning ``None``, not by raising.
+    """
+    pixels = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if pixels is None:
+        raise AssetNotFoundError(f"Could not read image: {path}")
+    return np.ascontiguousarray(pixels[:, :, ::-1])
+
+
+def write_png(path: Path, pixels: NDArray[np.uint8]) -> None:
     """Save an ``(h, w, 3)`` RGB array as a PNG.
 
     OpenCV writes BGR, so the channels are reversed on the way out. Used
@@ -263,7 +273,7 @@ def _write_png(path: Path, pixels: NDArray[np.uint8]) -> None:
     cv2.imwrite(str(path), pixels[:, :, ::-1])
 
 
-def _write_text(path: Path, text: str) -> None:
+def write_text(path: Path, text: str) -> None:
     """Write UTF-8 text, creating parent directories as needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"{text}\n" if text else "", encoding="utf-8")

@@ -1,9 +1,10 @@
 """The camera pipeline as a grid producer (Phase 3.4).
 
-Assembles the four Phase 3 steps into one thing the mission loop can hold::
+Assembles the Phase 3 steps — and, optionally, Phase 4's denoiser — into
+one thing the mission loop can hold::
 
-    SensorRig -> FrameDegrader -> IVisionDetector -> DetectionMerger
-              -> OccupancyGridBuilder
+    SensorRig -> FrameDegrader -> [IDenoiser] -> IVisionDetector
+              -> DetectionMerger -> OccupancyGridBuilder
 
 and exposes it as an
 :class:`~sentry_ai.interfaces.world.IOccupancyGridSource`, so that swapping
@@ -28,7 +29,7 @@ from sentry_ai.common.logging_config import get_logger
 from sentry_ai.domain.entities import Position
 from sentry_ai.domain.map import CityMap
 from sentry_ai.domain.occupancy import OccupancyGrid
-from sentry_ai.interfaces.perception import IVisionDetector
+from sentry_ai.interfaces.perception import IDenoiser, IVisionDetector
 from sentry_ai.interfaces.world import IOccupancyGridSource
 from sentry_ai.perception.grid_builder import OccupancyGridBuilder
 from sentry_ai.perception.merger import CameraObservation, DetectionMerger
@@ -97,6 +98,7 @@ class DetectedGridSource(IOccupancyGridSource):
         builder: OccupancyGridBuilder,
         degrader: FrameDegrader | None = None,
         merger: DetectionMerger | None = None,
+        denoiser: IDenoiser | None = None,
     ) -> None:
         """Compose the pipeline.
 
@@ -111,18 +113,26 @@ class DetectedGridSource(IOccupancyGridSource):
                 frames, which is the right choice only for a control run.
             merger: Defaults to a plain :class:`DetectionMerger`; injectable
                 because its rules are the sort of thing an experiment varies.
+            denoiser: Phase 4. Cleans each frame after the degrader and
+                before the observer — the one place it can go, since it
+                exists to undo what the degrader did. ``None`` hands the
+                observer the corrupted frames directly, the Phase 3
+                behaviour.
         """
         self._rig = rig
         self._observer = observer
         self._builder = builder
         self._degrader = degrader
         self._merger = merger if merger is not None else DetectionMerger()
+        self._denoiser = denoiser
 
     def grid_for(self, city_map: CityMap, vehicle_position: Position) -> OccupancyGrid:
         """Look at the city through the cameras and report what is believed."""
         frames = self._rig.capture_cctv(city_map)
         if self._degrader is not None:
             frames = [self._degrader.degrade(frame) for frame in frames]
+        if self._denoiser is not None:
+            frames = [frame.with_pixels(self._denoiser.denoise(frame.pixels)) for frame in frames]
         merged = self._merger.merge(self._observer.observe(frames))
         logger.debug("built a belief grid from %d merged detection(s)", len(merged))
         return self._builder.build(merged, vehicle_position=vehicle_position)

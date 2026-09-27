@@ -9,6 +9,8 @@ are in play; everything downstream sees ports.
 Usage:
     python scripts/run_simulation.py [--config configs/app.yaml]
     python scripts/run_simulation.py --headless [--max-ticks 5000]
+    python scripts/run_simulation.py --perception --device cuda
+    python scripts/run_simulation.py --perception --denoiser models/autoencoder/sentry/best.pt
 
 Controls (windowed): Escape quit, Space pause, R restart the mission, Tab
 toggle manual driving, G occupancy-grid view, C camera panel, arrow keys /
@@ -27,6 +29,7 @@ from sentry_ai.common.logging_config import get_logger, setup_logging
 from sentry_ai.config.loader import ConfigLoader
 from sentry_ai.config.schema import AppConfig
 from sentry_ai.domain.map import CityMap
+from sentry_ai.interfaces.perception import IDenoiser
 from sentry_ai.interfaces.world import IOccupancyGridSource
 from sentry_ai.navigation.astar import AStarPlanner
 from sentry_ai.perception.grid_builder import OccupancyGridBuilder
@@ -156,7 +159,22 @@ def _build_grid_source(
         ),
         builder=OccupancyGridBuilder.from_city_map(city_map),
         degrader=FrameDegrader(sensor_config.degradation, np.random.default_rng(args.seed)),
+        denoiser=_build_denoiser(loader, args),
     )
+
+
+def _build_denoiser(loader: ConfigLoader, args: argparse.Namespace) -> IDenoiser | None:
+    """The Phase 4 autoencoder, when ``--denoiser`` names one; otherwise none.
+
+    Imported here, not at the top, so a mission without a denoiser never
+    loads Torch for it.
+    """
+    if args.denoiser is None:
+        return None
+
+    from sentry_ai.perception.autoencoder import ConvDenoisingAutoencoder  # noqa: PLC0415
+
+    return ConvDenoisingAutoencoder.from_checkpoint(loader.resolve(args.denoiser), args.device)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -196,6 +214,10 @@ def _parse_args() -> argparse.Namespace:
         "--image-size", type=int, default=256, help="Inference resolution; must match training."
     )
     perception.add_argument("--seed", type=int, default=0, help="Seed for the frame degrader.")
+    perception.add_argument(
+        "--denoiser",
+        help="Denoising autoencoder checkpoint (Phase 4), applied before the detector.",
+    )
     return parser.parse_args()
 
 

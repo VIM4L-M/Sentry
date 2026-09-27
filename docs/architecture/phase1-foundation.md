@@ -4,7 +4,7 @@
 satisfies (M1 — Walking Skeleton).
 
 This note records decisions made *during* implementation that weren't (or couldn't be)
-fully specified in PROJECT.md up front, per CLAUDE.md's "never skip documentation" /
+fully specified in PROJECT.md up front, per the project's "never skip documentation" /
 "always update README/architecture when it changes" rules.
 
 ## Deviations from the original PROJECT.md draft

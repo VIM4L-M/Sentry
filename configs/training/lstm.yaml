@@ -1,0 +1,44 @@
+# Behaviour LSTM for Unit III (Sequence Models).
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_lstm_config().
+# Every key is optional — an omitted key uses the dataclass default in
+# sentry_ai.config.schema.
+
+# Written by scripts/record_trajectories.py: train.json and val.json, split
+# by mission so no validation mission contributes a single training window.
+trajectories_dir: "data/trajectories"
+runs_dir: "models/lstm"
+
+# The model sees the last `window` ticks and predicts what the vehicle does
+# over the next `horizon`. Four ticks is long enough to include a corner —
+# turning takes a tick, then the vehicle moves — and short enough that the
+# answer is still mostly determined by where the vehicle is now. At 4 ticks
+# the classes split roughly 71% advance, 24% divert, 5% retreat.
+window: 8
+horizon: 4
+
+# Half-angle of the "mostly forward" / "mostly backward" cones. At 30,
+# three tiles ahead and one sideways is an advance; two and two is a divert.
+# See sentry_ai/sequence/behaviour.py.
+cone_degrees: 30.0
+
+# Deliberately small: the input is seven numbers per tick, and the whole
+# training set is a few tens of thousands of windows.
+hidden_size: 64
+num_layers: 2
+dropout: 0.2
+
+epochs: 40
+batch_size: 64
+learning_rate: 0.001
+weight_decay: 0.0
+patience: 8            # stop early if validation macro-F1 stops improving
+
+# Weight the loss by square-root inverse class frequency. Without weighting
+# the cheapest way to a low loss is to answer "advance" every time — which is
+# also the baseline the model has to beat. The square root matters: plain
+# inverse frequency gave the rare HOLD class 500x the weight of ADVANCE and
+# the model cried "hold" at everything.
+class_weighting: true
+
+device: "auto"
+seed: 20250808

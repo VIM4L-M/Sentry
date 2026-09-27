@@ -151,3 +151,24 @@ class TestTrainingPairs:
         corrupted, clean = _degrader().degrade_pair(_frame())
         assert corrupted.pixels.shape == clean.pixels.shape
         assert corrupted.annotations == clean.annotations
+
+
+class TestBarePixels:
+    """``degrade_pixels`` is what the autoencoder's training crops go through."""
+
+    def test_it_matches_frame_degradation_for_the_same_seed(self) -> None:
+        frame = _gradient_frame()
+        via_frame = _degrader(rng_seed=5).degrade(frame).pixels
+        via_pixels = _degrader(rng_seed=5).degrade_pixels(frame.pixels)
+        assert np.array_equal(via_frame, via_pixels)
+
+    def test_it_accepts_an_image_no_camera_produced(self) -> None:
+        crop = np.full((20, 20, 3), 90, dtype=np.uint8)
+        corrupted = _degrader(noise_std=10.0).degrade_pixels(crop)
+        assert corrupted.shape == crop.shape
+        assert corrupted.dtype == np.uint8
+
+    def test_the_input_is_not_mutated(self) -> None:
+        crop = np.full((20, 20, 3), 90, dtype=np.uint8)
+        _degrader(noise_std=30.0, smoke_density=1.0).degrade_pixels(crop)
+        assert np.all(crop == 90)

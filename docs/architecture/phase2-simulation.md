@@ -5,7 +5,7 @@ that finished the phase are in
 [phase2-dynamic-world-and-sensors.md](phase2-dynamic-world-and-sensors.md).
 
 Records decisions made *during* implementation that PROJECT.md does not specify, per
-CLAUDE.md's documentation rules. The architectural split this phase rests on is
+the project's documentation rules. The architectural split this phase rests on is
 recorded separately in [ADR 0002](../adr/0002-two-tier-navigation-and-command-center.md).
 
 ## What runs today
