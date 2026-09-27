@@ -33,15 +33,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import numpy as np
-
-from sentry_ai.common.exceptions import ConfigurationError
 from sentry_ai.common.logging_config import get_logger, setup_logging
 from sentry_ai.config.loader import ConfigLoader
-from sentry_ai.config.schema import AppConfig
 from sentry_ai.domain.map import CityMap
-from sentry_ai.simulation.factory import Mission, MissionSource, build_mission
-from sentry_ai.training.trajectories import TrajectoryRecorder, TrajectorySet, start_positions
+from sentry_ai.training.missions import MissionFactory
+from sentry_ai.training.trajectories import TrajectoryRecorder, TrajectorySet
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -62,8 +58,10 @@ def main() -> int:
 
     city_template = loader.load_yaml(app_config.map_config_path)
     probe = CityMap.from_config(city_template)
-    source = _mission_source(loader, app_config, randomise_start=not args.fixed_start)
-    recorder = TrajectoryRecorder(source, max_ticks=args.max_ticks)
+    factory = MissionFactory.from_app_config(
+        loader, app_config, randomise_start=not args.fixed_start
+    )
+    recorder = TrajectoryRecorder(factory.build, max_ticks=args.max_ticks)
     output = loader.resolve(args.output)
 
     first_val = args.seed_base + args.train_missions
@@ -77,39 +75,6 @@ def main() -> int:
         trajectories.save(output / f"{split}.json")
         _report(split, trajectories)
     return 0
-
-
-def _mission_source(
-    loader: ConfigLoader, app_config: AppConfig, randomise_start: bool
-) -> MissionSource:
-    """A fresh mission per seed — a mission mutates the city it runs in.
-
-    With ``randomise_start`` the vehicle starts on a road tile drawn from the
-    seed; the map is rebuilt from config with that start, so ``CityMap``'s
-    own validation still applies to it.
-    """
-    if app_config.simulation_config_path is None or app_config.vehicle_config_path is None:
-        raise ConfigurationError(
-            "app config must set 'simulation_config' and 'vehicle_config' to run missions"
-        )
-    simulation_config = loader.load_simulation_config(app_config.simulation_config_path)
-    vehicle_config = loader.load_vehicle_config(app_config.vehicle_config_path)
-    map_data = loader.load_yaml(app_config.map_config_path)
-    starts = start_positions(CityMap.from_config(map_data))
-
-    def build(seed: int) -> Mission:
-        data = map_data
-        if randomise_start:
-            start = starts[int(np.random.default_rng(seed).integers(len(starts)))]
-            data = {**map_data, "vehicle_start": [start.x, start.y]}
-        return build_mission(
-            city_map=CityMap.from_config(data),
-            simulation_config=simulation_config,
-            vehicle_config=vehicle_config,
-            hazard_seed=seed,
-        )
-
-    return build
 
 
 def _report(split: str, trajectories: TrajectorySet) -> None:

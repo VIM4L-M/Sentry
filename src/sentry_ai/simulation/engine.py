@@ -121,7 +121,7 @@ class SimulationEngine:
         self._tick_index += 1
         vehicle = self._city_map.vehicle
         world_change = self._advance_world(vehicle)
-        decision = self._controller.decide(self._observe(vehicle))
+        decision = self._controller.decide(self.observe())
         outcome = self._vehicle_controller.apply(vehicle, decision.action, self._mission.grid)
 
         if outcome.collided:
@@ -174,8 +174,14 @@ class SimulationEngine:
                 break
         return self._mission.stats
 
-    def _observe(self, vehicle: Vehicle) -> LocalObservation:
-        """Build the local controller's view of this instant."""
+    def observe(self) -> LocalObservation:
+        """The local controller's view of this instant.
+
+        Public so the Phase 6 RL environment can show the agent the state
+        it is about to act in, before the tick that acts. Built fresh on
+        every call from the live mission, so it is never stale.
+        """
+        vehicle = self._city_map.vehicle
         waypoint = self._mission.next_waypoint()
         dx, dy = vehicle.heading.delta
         ahead_x, ahead_y = vehicle.position.x + dx, vehicle.position.y + dy

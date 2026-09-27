@@ -1,12 +1,13 @@
 # Phase 4 — representation learning: design notes
 
-**Status:** core complete. The denoiser is built, tested, trained, and wired
+**Status:** complete. The denoiser is built, tested, trained, and wired
 into the camera pipeline, and milestone M4 — *the denoiser measurably
-improves detection under injected noise* — was met, **but only once the
-detector was retrained on denoised frames**. Dropped in front of the
-existing detector, the denoiser made detection worse. Both results are
-below. Every number here is from short CPU runs; a full-length GPU run
-should confirm them (see "Still open").
+improves detection under injected noise* — is met, confirmed at full
+training length on the target GPU. It holds **only once the detector is
+retrained on denoised frames**: dropped in front of the existing detector,
+the denoiser made detection worse. Both results are below; the headline
+numbers are the GPU run, and the CPU runs that preceded it are kept because
+they are where the failure mode was found.
 
 Records decisions made *during* implementation that PROJECT.md does not
 specify.
@@ -157,7 +158,29 @@ Every crop and every corruption is seeded by `(seed, epoch, index)`, so a run
 replays exactly regardless of how many DataLoader workers fetch samples. A
 test trains twice and asserts identical validation loss.
 
-## Results
+## Results — full length, RTX 3050 Laptop GPU (4 GB)
+
+The four commands under "What runs today", unmodified: autoencoder 40
+epochs, both detectors 60 epochs. The smoky-trained detector is a fresh
+`labelfix` run on the same machine (mAP50 0.992, mAP50-95 0.933, victim
+recall 1.000 on its own validation split). Each pipeline is scored with the
+detector trained on its own input, on the 495 held-out frames:
+
+| severity | mAP50, smoky pipeline | mAP50, denoised pipeline | victim recall, smoky | victim recall, denoised |
+|---|---|---|---|---|
+| 0 (clean) | 0.983 | **0.992** | 1.000 | 1.000 |
+| 1.0 | 0.992 | **0.993** | 1.000 | 1.000 |
+| 1.5 | 0.977 | **0.982** | 1.000 | 1.000 |
+| **2.0** | 0.880 | **0.938** | 0.861 | **0.990** |
+
+At twice the shipped corruption the smoky pipeline misses 14% of victims;
+the denoised pipeline misses 1%. mAP50-95 at 2.0 goes from 0.630 to 0.768 —
+the boxes are not only found but placed much more tightly, which is what
+the occupancy grid consumes. The denoised pipeline is at least as good at
+every severity; the small mAP dip the CPU runs showed at 1.5 is gone at full
+length. **M4 is met.**
+
+## Results — short CPU runs (where the failure mode was found)
 
 All runs on a 4-core CPU, same dataset (16 missions, 1965 frames, split by
 mission), 495 held-out validation frames. Severity is a multiple of the
@@ -288,11 +311,9 @@ seen smoke that heavy, and the denoiser has.
 
 ## Still open
 
-* **Confirm at full length on a GPU.** Every number above is a short CPU
-  run: 12 of 40 autoencoder epochs (still improving), 20 of 60 detector
-  epochs, one seed each. The M4 margin at severity 2.0 is real but small
-  enough that a second seed should reproduce it before anyone leans on it.
-  Run the four commands under "What runs today" with `--device cuda`.
+* **One seed per run.** The GPU run confirmed the CPU result with a larger
+  margin, which is two independent trainings agreeing; a formal multi-seed
+  study has not been done.
 * **The smoky detector was trained at severity 1.0 only.** A fairer
   baseline would train it with severity augmentation too; if that closes
   the 2.0 gap on its own, the denoiser's case rests on the victim-recall

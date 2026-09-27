@@ -22,6 +22,7 @@ from sentry_ai.config.schema import (
     CameraSpec,
     DebrisCollapseConfig,
     DegradationConfig,
+    DqnTrainingConfig,
     FireSpreadConfig,
     HazardConfig,
     LstmTrainingConfig,
@@ -30,6 +31,7 @@ from sentry_ai.config.schema import (
     OnboardCameraConfig,
     PlannerConfig,
     RenderConfig,
+    RewardConfig,
     SensorConfig,
     SimulationConfig,
     VehicleConfig,
@@ -278,6 +280,76 @@ class ConfigLoader:
             class_weighting=_as_bool(data, "class_weighting", defaults.class_weighting),
             device=str(data.get("device", defaults.device)),
             seed=_as_int(data, "seed", defaults.seed),
+        )
+
+    def load_dqn_config(self, relative_path: PathLike) -> DqnTrainingConfig:
+        """Load ``configs/training/dqn.yaml`` into a :class:`DqnTrainingConfig`.
+
+        Same optional-key policy as every other config; ``reward`` is an
+        optional nested section.
+
+        Raises:
+            AssetNotFoundError: If the file does not exist.
+            ConfigurationError: If a value has the wrong type.
+            ConfigValidationError: If a value is out of range.
+        """
+        data = self.load_yaml(relative_path)
+        defaults = DqnTrainingConfig()
+        reward_data = _require_mapping(data.get("reward", {}), "dqn.reward")
+        reward_defaults = RewardConfig()
+        hidden = data.get("hidden_sizes", list(defaults.hidden_sizes))
+        if not isinstance(hidden, list) or not all(
+            isinstance(size, int) and not isinstance(size, bool) for size in hidden
+        ):
+            raise ConfigurationError(
+                f"config key 'hidden_sizes' must be a list of ints, got {hidden!r}"
+            )
+        return DqnTrainingConfig(
+            runs_dir=self.resolve(str(data.get("runs_dir", defaults.runs_dir))),
+            train_seeds=_as_int(data, "train_seeds", defaults.train_seeds),
+            eval_seeds=_as_int(data, "eval_seeds", defaults.eval_seeds),
+            seed_base=_as_int(data, "seed_base", defaults.seed_base),
+            max_episode_steps=_as_int(data, "max_episode_steps", defaults.max_episode_steps),
+            total_timesteps=_as_int(data, "total_timesteps", defaults.total_timesteps),
+            learning_rate=_as_float(data, "learning_rate", defaults.learning_rate),
+            buffer_size=_as_int(data, "buffer_size", defaults.buffer_size),
+            learning_starts=_as_int(data, "learning_starts", defaults.learning_starts),
+            batch_size=_as_int(data, "batch_size", defaults.batch_size),
+            gamma=_as_float(data, "gamma", defaults.gamma),
+            train_freq=_as_int(data, "train_freq", defaults.train_freq),
+            target_update_interval=_as_int(
+                data, "target_update_interval", defaults.target_update_interval
+            ),
+            exploration_fraction=_as_float(
+                data, "exploration_fraction", defaults.exploration_fraction
+            ),
+            exploration_final_eps=_as_float(
+                data, "exploration_final_eps", defaults.exploration_final_eps
+            ),
+            hidden_sizes=tuple(hidden),
+            eval_every=_as_int(data, "eval_every", defaults.eval_every),
+            eval_episodes=_as_int(data, "eval_episodes", defaults.eval_episodes),
+            rescue_threshold=_as_float(data, "rescue_threshold", defaults.rescue_threshold),
+            device=str(data.get("device", defaults.device)),
+            seed=_as_int(data, "seed", defaults.seed),
+            reward=RewardConfig(
+                **{
+                    name: _as_float(reward_data, name, getattr(reward_defaults, name))
+                    for name in (
+                        "progress",
+                        "pickup",
+                        "delivery",
+                        "collision",
+                        "damage",
+                        "fire_proximity",
+                        "step",
+                        "battery",
+                        "reverse",
+                        "completion",
+                        "failure",
+                    )
+                }
+            ),
         )
 
     def load_simulation_config(self, relative_path: PathLike) -> SimulationConfig:

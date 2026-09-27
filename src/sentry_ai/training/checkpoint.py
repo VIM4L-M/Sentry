@@ -65,7 +65,22 @@ def save_checkpoint(
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, path)
+    return write_metadata(path, config, metrics)
 
+
+def write_metadata(
+    path: Path, config: Any, metrics: dict[str, float] | None = None
+) -> Path:
+    """Write the metadata file for a model saved at ``path`` by anything.
+
+    :func:`save_checkpoint` calls this after ``torch.save``; models whose
+    library writes its own file format — Stable-Baselines3's ``.zip`` —
+    call it directly, so every model in ``models/`` answers the same
+    questions the same way.
+
+    Returns:
+        The metadata file's path.
+    """
     metadata = {
         "weights": path.name,
         "config_fingerprint": config_fingerprint(config),

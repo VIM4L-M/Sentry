@@ -1,7 +1,7 @@
 # SENTRY AI — Autonomous Emergency Rescue Vehicle for Disaster Zones
 
 **Type:** Semester-long Applied Deep Learning project (simulation-based)
-**Status:** Phases 1-3 complete; Phases 4 and 5 core complete — M4 met on CPU-scale runs (GPU confirmation pending), M5 met (see §10)
+**Status:** Phases 1-4 complete; Phases 5 and 6 core complete — M4, M5 and M6 met (see §10)
 **Audience:** Single student developer, evaluated to production-software standards
 
 This document is the canonical architecture reference for SENTRY AI. It is intentionally
@@ -182,6 +182,7 @@ sentry/
 │   ├── app.yaml                    # root config: composes the others
 │   ├── logging.yaml                # dictConfig-style logging setup
 │   ├── simulation.yaml             # tick rate, mission rules, planner, hazards
+│   ├── simulation_stress.yaml      # harsher hazards, robustness evaluation only
 │   ├── vehicle.yaml                # vehicle kinematics/limits
 │   ├── sensors.yaml                # camera layout, degradation, sensor palette
 │   ├── sensors_v75.yaml            # camera experiment (bigger markers), Phase 3.1
@@ -256,6 +257,7 @@ sentry/
 │       │   ├── behaviour.py        # what ADVANCE/RETREAT/HOLD/DIVERT mean + baseline
 │       │   └── lstm_predictor.py   # LstmMotionPredictor implementing IMotionPredictor
 │       ├── decision/                 # Phase 6/7 — DQN policy + MLP fusion adapters
+│       │   └── dqn_controller.py   # egocentric features + DqnLocalController (6)
 │       ├── training/                  # Phase 3-7 — training pipeline orchestration
 │       │   ├── dataset.py          # builds the YOLO dataset from seeded missions
 │       │   ├── yolo.py             # fine-tuning + per-class evaluation
@@ -264,7 +266,10 @@ sentry/
 │       │   ├── checkpoint.py       # weights + metadata.json, saved together
 │       │   ├── denoising.py        # autoencoder dataset, training, PSNR evaluation
 │       │   ├── trajectories.py     # records vehicle states across seeded missions
-│       │   └── motion.py           # LSTM windows, baselines, macro-F1 report, trainer
+│       │   ├── motion.py           # LSTM windows, baselines, macro-F1 report, trainer
+│       │   ├── missions.py         # MissionFactory: missions by seed, random starts
+│       │   ├── sentry_env.py       # SentryEnv: a whole mission as a Gymnasium env
+│       │   └── dqn.py              # DQN trainer + mission-level comparison (M6)
 │       └── app/                        # Phase 9 — Streamlit dashboard
 │
 ├── scripts/                        # composition roots / CLI entry points
@@ -283,6 +288,7 @@ sentry/
 │   ├── train_lstm.py               # Phase 5
 │   ├── evaluate_lstm.py            # Phase 5: vs baselines, all and novel windows
 │   ├── train_dqn.py                # Phase 6
+│   ├── evaluate_dqn.py             # Phase 6: vs the waypoint follower (M6)
 │   ├── train_mlp_fusion.py         # Phase 7
 │   └── run_app.py                  # Phase 9
 │
@@ -400,14 +406,13 @@ MissionController.invalidate_route_if_affected(changed_tiles) ──► replan i
 ```
 
 **What exists today (Phases 3-5)** is that global loop,
-the tick loop with a deterministic `WaypointFollower` standing in for
-`ILocalController`, the hazard processes, and the sensor rig. With `--perception`
+the tick loop with a deterministic `WaypointFollower` — or, with `--dqn`, the Phase 6
+`DqnLocalController` — as `ILocalController`, the hazard processes, and the sensor rig. With `--perception`
 the command center's map is built from the cameras: frames are degraded, optionally
 denoised by the Phase 4 autoencoder, run through YOLOv8n, merged across the four
 overlapping CCTV views, and turned into the occupancy grid A\* plans over.
 `IMotionPredictor` is implemented by the Phase 5 LSTM but runs offline only — its
-consumer is Phase 7's fusion network. `IDecisionFusion` is still unfulfilled, and the
-per-tick move is still the waypoint follower rather than a learned policy.
+consumer is Phase 7's fusion network. `IDecisionFusion` is still unfulfilled.
 
 ---
 
@@ -690,9 +695,9 @@ sequenceDiagram
 | 1 | Foundation & Core Architecture | 1-2 | — (infra) | ✅ **Complete** |
 | 2 | Simulation Engine, Occupancy Grid & A* Routing | 3-4 | — (infra) | ✅ **Complete** |
 | 3 | Computer Vision — Detection | 5-6 | Unit II | ✅ **Complete** |
-| 4 | Representation Learning — Denoising AE | 7 | Unit IV | 🚧 Core complete — GPU confirmation pending |
+| 4 | Representation Learning — Denoising AE | 7 | Unit IV | ✅ **Complete** |
 | 5 | Sequence Modeling — LSTM | 8 | Unit III | ✅ **Core complete** — consumed from Phase 7 |
-| 6 | Reinforcement Learning — DQN | 9-11 | Unit V | ⏳ Not started |
+| 6 | Reinforcement Learning — DQN | 9-11 | Unit V | ✅ **Core complete** — perceived-grid test in Phase 8 |
 | 7 | Decision Fusion — MLP | 12 | Unit I | ⏳ Not started |
 | 8 | End-to-End Autonomous Integration | 13 | All | ⏳ Not started |
 | 9 | Dashboard, Testing, Docs, Deployment | 14-15 | — | ⏳ Not started |
@@ -813,7 +818,7 @@ Phase 4's autoencoder slots in as `SensorRig → FrameDegrader → IDenoiser →
 IVisionDetector` without moving anything. Until Phase 4 exists, 3.1 trains directly on
 degraded frames, which is the honest baseline the denoiser has to beat.
 
-### Phase 4 — Representation Learning (Unit IV) 🚧
+### Phase 4 — Representation Learning (Unit IV) ✅
 
 Design notes: [`docs/architecture/phase4-denoising.md`](docs/architecture/phase4-denoising.md).
 
@@ -831,16 +836,14 @@ and its pixel-aligned clean original.
 - `scripts/build_denoised_dataset.py` — the detector behind the denoiser must be
   trained on denoised frames; the smoky-trained one gets *worse* when handed them
 
-Outcome so far (short CPU runs, held-out missions):
+Outcome (full length on the target RTX 3050 GPU, held-out missions):
 
 | | result |
 |---|---|
-| Denoiser PSNR, shipped corruption / double | 22.4 → 29.9 dB / 16.9 → 28.0 dB |
-| Denoiser + smoky-trained detector | worse everywhere — victim recall 0.35 at 1.0x |
-| Denoiser + detector trained on denoised frames, at 2x corruption | mAP50 0.862 → **0.890**, victim recall 0.868 → **0.950** |
-
-Remaining: reproduce at full training length on a GPU, and run missions across
-hazard seeds on the denoised pipeline.
+| Denoiser + smoky-trained detector (CPU run) | worse everywhere — victim recall 0.35 at 1.0x |
+| Denoiser + detector trained on denoised frames, at 2x corruption | mAP50 0.880 → **0.938**, victim recall 0.861 → **0.990** |
+| Same, at 0 / 1.0 / 1.5x | equal or better at every level |
+| Missions on the denoised pipeline, six hazard seeds | 4 rescued, 0 lost on every seed — same as ground truth |
 
 ### Phase 5 — Sequence Modeling (Unit III) ✅
 
@@ -868,16 +871,34 @@ A first run scored 0.964 — until 99.4% of held-out windows proved to be copies
 training windows (one start tile, one route). Randomised starts and the novel-window
 score are the correction; the design notes record it.
 
-### Phase 6 — Reinforcement Learning (Unit V)
+### Phase 6 — Reinforcement Learning (Unit V) ✅
 
-- `SentryEnv`: Gymnasium-compliant wrapper around the Phase 2 simulation engine
-- Reward shaping is **local**, not city-scale (see ADR 0002): +progress along the
-  planned route, +rescue, −collision, −fire-proximity, −time, −battery-waste (all
-  weights config-driven, `configs/training/dqn.yaml`)
-- Stable-Baselines3 DQN training pipeline (`train_dqn.py`); state-based observation first
-  (`LocalObservation.as_array()`), vision-based observation as a stretch goal
-- `DqnLocalController` adapter implementing `ILocalController`, scored against the
-  `WaypointFollower` baseline
+Design notes: [`docs/architecture/phase6-reinforcement.md`](docs/architecture/phase6-reinforcement.md).
+
+- `SentryEnv` (`training/sentry_env.py`): one episode is one real mission — hazards,
+  A\* replanning, the live physics — with the agent in place of the waypoint follower
+- Reward is **local** (ADR 0002), every weight in `configs/training/dqn.yaml`: progress
+  toward the planned waypoint, pickups, deliveries, and penalties for collisions,
+  damage, fire, time, battery and reversing
+- Stable-Baselines3 DQN over seven **egocentric** features (no absolute position);
+  `DqnLocalController` implements `ILocalController` and drops in with
+  `run_simulation.py --dqn`
+- The checkpoint is chosen, and M6 judged, on **real held-out missions** against the
+  follower — never on episode return
+
+Outcome (CPU, 300k steps, ~16 min; 40 held-out missions, identical for both drivers):
+
+| | rescued | lost | collisions | completed |
+|---|---|---|---|---|
+| waypoint follower | 143 | 5 | 0 | 95% |
+| DQN | **149** | 5 | 0 | **100%** |
+| harsh disaster: follower / DQN | 135 / **136** | 14 / 13 | 0 / 0 | 98% / 98% |
+
+Honestly: **parity with a speed edge.** The extra rescues are one situation — the DQN
+reversed out where the follower U-turned, was two tiles further on when a fire sealed
+the street, and escaped. An early policy drove 14% of its tiles backwards; a reverse
+penalty fixed that. With a ground-truth grid the planner absorbs every surprise, so the
+local tier's real test is on the camera-built grid in Phase 8.
 
 ### Phase 7 — Decision Fusion (Unit I)
 
@@ -921,14 +942,17 @@ score are the correction; the design notes record it.
 - [x] **M3c — Drives On What It Sees**: a full mission completes on a detector-derived
       occupancy grid, with `navigation/` and `simulation/` unmodified. *(Phase 3.4-3.5)*
 - [x] **M4 — Sees Clearly**: denoising autoencoder measurably improves detection mAP
-      under injected noise. *(Phase 4 — met at 2x corruption with a detector trained on
-      denoised frames; CPU-scale runs, GPU confirmation pending. See
-      [phase4-denoising.md](docs/architecture/phase4-denoising.md).)*
+      under injected noise. *(Phase 4 — at 2x corruption, mAP50 0.880 → 0.938 and victim
+      recall 0.861 → 0.990, with a detector trained on denoised frames; full length on
+      GPU. See [phase4-denoising.md](docs/architecture/phase4-denoising.md).)*
 - [x] **M5 — Anticipates**: LSTM behaviour predictions beat a naive baseline on held-out
       trajectories. *(Phase 5 — macro-F1 0.802 vs 0.205 on all held-out windows, and
       0.663 vs 0.349 on windows never seen in training.)*
-- [ ] **M6 — Learns to Drive**: DQN agent reaches a defined rescue-rate threshold in
-      `SentryEnv` without human control. *(Phase 6)*
+- [x] **M6 — Learns to Drive**: DQN agent reaches a defined rescue-rate threshold in
+      `SentryEnv` without human control. *(Phase 6 — threshold: ≥90% of the waypoint
+      follower's rescues on the same held-out missions; reached 104% (149 vs 143 of 40
+      missions), parity under a harsher disaster. See
+      [phase6-reinforcement.md](docs/architecture/phase6-reinforcement.md).)*
 - [ ] **M7 — Decides**: MLP fusion outperforms any single upstream signal on a fused
       decision-quality metric. *(Phase 7)*
 - [ ] **M8 — Fully Autonomous**: a complete mission (spawn → rescue all reachable
@@ -1217,7 +1241,8 @@ docs/
 │   ├── phase2-dynamic-world-and-sensors.md
 │   ├── phase3-detection.md
 │   ├── phase4-denoising.md
-│   └── phase5-sequence.md
+│   ├── phase5-sequence.md
+│   └── phase6-reinforcement.md
 ├── adr/                          # Architecture Decision Records
 │   ├── 0001-config-driven-yaml-dataclasses.md
 │   └── 0002-two-tier-navigation-and-command-center.md

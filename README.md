@@ -11,10 +11,9 @@ underneath it: fire spreads, buildings collapse into the streets, and the comman
 center replans around both. A four-camera CCTV network feeds a YOLOv8n detector
 whose output builds the occupancy grid the planner reasons over — the vehicle
 can complete a rescue on what it *sees* rather than on ground truth. Phase 4
-(denoising autoencoder) is core-complete: the denoiser is built, trained, and slots
-in front of the detector with `--denoiser`, and milestone M4 was met on CPU-scale
-runs — pending confirmation at full length on a GPU. Phase 5 (behaviour LSTM) is
-core-complete and meets M5. See PROJECT.md §10-11 for the phase breakdown and
+(denoising autoencoder) is complete: the denoiser slots in front of the detector
+with `--denoiser`, and at double the smoke it lifts victim recall from 0.86 to 0.99
+(M4). Phase 5 (behaviour LSTM) meets M5, and Phase 6 (DQN driving policy) meets M6. See PROJECT.md §10-11 for the phase breakdown and
 milestones.
 
 ## Quick Start
@@ -248,12 +247,12 @@ through smoke. Retrained on denoised frames, the pair wins where it should:
 
 | corruption | mAP50, no denoiser → with | victim recall, no denoiser → with |
 |---|---|---|
-| 1.0x (trained on) | 0.990 → 0.989 | 0.996 → 1.000 |
-| 2.0x | 0.862 → **0.890** | 0.868 → **0.950** |
-| none (clear day) | 0.923 → **0.989** | 0.978 → **1.000** |
+| none (clear day) | 0.983 → **0.992** | 1.000 → 1.000 |
+| 1.0x (trained on) | 0.992 → **0.993** | 1.000 → 1.000 |
+| 1.5x | 0.977 → **0.982** | 1.000 → 1.000 |
+| 2.0x | 0.880 → **0.938** | 0.861 → **0.990** |
 
-Short CPU runs (12 autoencoder epochs, 20 detector epochs) — to be confirmed at
-full length on a GPU.
+Full length on an RTX 3050 Laptop GPU: 40 autoencoder epochs, 60 per detector.
 
 **PSNR is always reported next to the input's own PSNR.** And PSNR is not the
 goal: milestone M4 is about *detection*. `evaluate_denoiser.py --detector` scores
@@ -291,6 +290,38 @@ model scored 0.964 by remembering routes. Starts are now randomised, and
 row. Details in
 [`docs/architecture/phase5-sequence.md`](docs/architecture/phase5-sequence.md).
 
+## Phase 6 — DQN Driving Policy (Unit V)
+
+```bash
+python scripts/train_dqn.py                 # ~15 min on CPU; a GPU buys little here
+python scripts/evaluate_dqn.py              # 40 held-out missions vs the waypoint follower
+python scripts/evaluate_dqn.py --simulation configs/simulation_stress.yaml
+python scripts/run_simulation.py --dqn models/dqn/sentry/best.zip   # watch it drive
+```
+
+`SentryEnv` turns a whole mission into a Gymnasium environment: the A\* command
+center still plans every route, and a Stable-Baselines3 DQN replaces the waypoint
+follower for the tick-by-tick driving — forward, reverse, turn, stop. It sees seven
+**egocentric** numbers (where the waypoint is ahead/right, blocked ahead, fire,
+battery), never its absolute position, so it learns to drive rather than to
+memorise the city.
+
+**Judged on missions, not reward.** M6 was fixed before training: rescue at least
+90% of what the follower rescues on the same held-out missions.
+
+| 40 held-out missions | rescued | lost | collisions | completed |
+|---|---|---|---|---|
+| waypoint follower | 143 | 5 | 0 | 95% |
+| DQN | **149** | 5 | 0 | **100%** |
+
+The honest reading is **parity with a speed edge**: the six extra rescues are one
+situation, where the DQN was two tiles further on when a fire sealed a street. Two
+things were caught on the way — an early policy drove 14% of its tiles *backwards*
+(the physics made reversing as cheap as driving; a reverse penalty fixed it), and
+with a perfect map the planner absorbs every surprise, so the learned driver's real
+test is on the camera-built map in Phase 8. Details in
+[`docs/architecture/phase6-reinforcement.md`](docs/architecture/phase6-reinforcement.md).
+
 ## Project Layout
 
 ```
@@ -306,6 +337,7 @@ src/sentry_ai/
   simulation/  Tick engine, mission state machine, vehicle physics, hazards
   sensors/     Synthetic cameras: rasterizer, ground-truth labels, frame degradation
   sequence/    Behaviour classes and the LSTM motion predictor
+  decision/    The DQN local controller (Phase 6); fusion comes in Phase 7
   training/    Offline only: dataset builder, YOLO + autoencoder + LSTM training,
                trajectory recording, seeding, metric logs, checkpoints
   rendering/   Pygame map renderer, HUD, keyboard input, mission window
@@ -350,7 +382,8 @@ built, owned by later phases).
   [Phase 2 — dynamic world & sensors](docs/architecture/phase2-dynamic-world-and-sensors.md),
   [Phase 3 — detection](docs/architecture/phase3-detection.md),
   [Phase 4 — denoising](docs/architecture/phase4-denoising.md),
-  [Phase 5 — sequence](docs/architecture/phase5-sequence.md))
+  [Phase 5 — sequence](docs/architecture/phase5-sequence.md),
+  [Phase 6 — reinforcement](docs/architecture/phase6-reinforcement.md))
 - [`docs/adr/`](docs/adr/) — Architecture Decision Records
   ([0001 config](docs/adr/0001-config-driven-yaml-dataclasses.md),
   [0002 two-tier navigation](docs/adr/0002-two-tier-navigation-and-command-center.md))

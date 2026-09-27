@@ -17,7 +17,8 @@ from sentry_ai.domain.enums import Heading, TerrainType
 from sentry_ai.domain.map import CityMap
 from sentry_ai.sequence.behaviour import heading_to_degrees
 from sentry_ai.simulation.factory import Mission, build_mission
-from sentry_ai.training.trajectories import TrajectoryRecorder, start_positions, vehicle_state
+from sentry_ai.training.missions import start_positions
+from sentry_ai.training.trajectories import TrajectoryRecorder, vehicle_state
 
 
 @pytest.fixture

@@ -11,6 +11,7 @@ Usage:
     python scripts/run_simulation.py --headless [--max-ticks 5000]
     python scripts/run_simulation.py --perception --device cuda
     python scripts/run_simulation.py --perception --denoiser models/autoencoder/sentry/best.pt
+    python scripts/run_simulation.py --dqn models/dqn/sentry/best.zip   # the learned driver
 
 Controls (windowed): Escape quit, Space pause, R restart the mission, Tab
 toggle manual driving, G occupancy-grid view, C camera panel, arrow keys /
@@ -29,6 +30,7 @@ from sentry_ai.common.logging_config import get_logger, setup_logging
 from sentry_ai.config.loader import ConfigLoader
 from sentry_ai.config.schema import AppConfig
 from sentry_ai.domain.map import CityMap
+from sentry_ai.interfaces.navigation import ILocalController
 from sentry_ai.interfaces.perception import IDenoiser
 from sentry_ai.interfaces.world import IOccupancyGridSource
 from sentry_ai.navigation.astar import AStarPlanner
@@ -111,7 +113,7 @@ def _build_scene(
         config=simulation_config.mission,
         grid_source=grid_source,
     )
-    mode_switch = build_mode_switch(WaypointFollower())
+    mode_switch = build_mode_switch(_build_driver(loader, args))
     engine = SimulationEngine(
         city_map=city_map,
         mission=mission,
@@ -177,6 +179,21 @@ def _build_denoiser(loader: ConfigLoader, args: argparse.Namespace) -> IDenoiser
     return ConvDenoisingAutoencoder.from_checkpoint(loader.resolve(args.denoiser), args.device)
 
 
+def _build_driver(loader: ConfigLoader, args: argparse.Namespace) -> ILocalController:
+    """Who drives in autonomous mode: the waypoint follower, or the Phase 6 DQN.
+
+    Only the per-tick driving changes — the command center still plans every
+    route (ADR 0002). Imported here so a mission without ``--dqn`` never loads
+    Stable-Baselines3.
+    """
+    if args.dqn is None:
+        return WaypointFollower()
+
+    from sentry_ai.decision.dqn_controller import DqnLocalController  # noqa: PLC0415
+
+    return DqnLocalController.from_file(loader.resolve(args.dqn), device=args.device)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a SENTRY AI rescue mission.")
     parser.add_argument(
@@ -194,6 +211,10 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_MAX_TICKS,
         help=f"Headless tick budget before giving up (default: {DEFAULT_MAX_TICKS}).",
+    )
+    parser.add_argument(
+        "--dqn",
+        help="Drive with a trained DQN (Phase 6) instead of the waypoint follower.",
     )
     perception = parser.add_argument_group("perception (Phase 3.5)")
     perception.add_argument(

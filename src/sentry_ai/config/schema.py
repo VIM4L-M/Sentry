@@ -813,6 +813,160 @@ class LstmTrainingConfig:
 
 
 @dataclass(frozen=True)
+class RewardConfig:
+    """What the DQN is paid for, per tick (Unit V).
+
+    Local by design (ADR 0002): the policy is rewarded for driving the route
+    the command center planned, not for choosing it. Every term is a weight
+    on a fact the physics or the mission already reports.
+
+    Attributes:
+        progress: Per tile closer to the waypoint that was active before the
+            tick. Moving away costs the same amount, so there is nothing to
+            gain by wandering off and back.
+        pickup: Per victim taken aboard.
+        delivery: Per victim delivered to the hospital.
+        collision: Per refused move into something impassable.
+        damage: Per health percentage lost (collision or fire).
+        fire_proximity: Scaled by the 0-1 closeness to the nearest fire.
+        step: Every tick. Makes dawdling cost something, including STOP.
+        battery: Per battery percentage spent.
+        reverse: Per REVERSE action. The physics charge reversing exactly
+            what driving forward costs, and an early policy exploited that,
+            driving 14% of its tiles backwards in stretches of up to ten —
+            cheaper than turning round. A rescue vehicle reverses to back
+            out of a dead end, not to cross town; this makes a U-turn the
+            cheaper way to change direction. ``0.0`` restores the old
+            behaviour.
+        completion: Once, when the mission completes.
+        failure: Once, when the mission fails.
+    """
+
+    progress: float = 1.0
+    pickup: float = 5.0
+    delivery: float = 10.0
+    collision: float = -2.0
+    damage: float = -0.2
+    fire_proximity: float = -0.5
+    step: float = -0.05
+    battery: float = -0.1
+    reverse: float = -0.2
+    completion: float = 10.0
+    failure: float = -10.0
+
+    def __post_init__(self) -> None:
+        for name in ("progress", "pickup", "delivery", "completion"):
+            if getattr(self, name) < 0.0:
+                raise ConfigValidationError(f"dqn.reward.{name} must be non-negative")
+        for name in (
+            "collision",
+            "damage",
+            "fire_proximity",
+            "step",
+            "battery",
+            "reverse",
+            "failure",
+        ):
+            if getattr(self, name) > 0.0:
+                raise ConfigValidationError(
+                    f"dqn.reward.{name} is a penalty and must be zero or negative"
+                )
+
+
+@dataclass(frozen=True)
+class DqnTrainingConfig:
+    """The environment, the DQN, and the bar it has to clear (Unit V).
+
+    Attributes:
+        runs_dir: Where the model, its metadata, and evaluations are written.
+        train_seeds: Hazard seeds training episodes are drawn from. Each
+            episode also starts the vehicle on a random road tile.
+        eval_seeds: Held-out seeds, never trained on.
+        seed_base: First training seed; evaluation seeds follow training.
+        max_episode_steps: Episode cut-off, well under the mission timer.
+        total_timesteps: Environment steps to train for.
+        learning_rate: Adam step size.
+        buffer_size: Replay buffer capacity, in transitions.
+        learning_starts: Random steps collected before learning begins.
+        batch_size: Transitions per gradient step.
+        gamma: Discount factor.
+        train_freq: Environment steps between gradient steps.
+        target_update_interval: Steps between target-network syncs.
+        exploration_fraction: Share of training over which epsilon decays.
+        exploration_final_eps: Epsilon after the decay.
+        hidden_sizes: Q-network hidden layers.
+        eval_every: Steps between held-out evaluations during training.
+        eval_episodes: Held-out missions per evaluation.
+        rescue_threshold: M6 bar — the DQN must rescue at least this share
+            of what the waypoint follower rescues on the same missions.
+        device: ``"auto"``, ``"cpu"``, ``"cuda"``, or a device index.
+        seed: Fixed so a run is reproducible.
+        reward: The reward weights.
+    """
+
+    runs_dir: Path = Path("models/dqn")
+    train_seeds: int = 400
+    eval_seeds: int = 40
+    seed_base: int = 3000
+    max_episode_steps: int = 1500
+    total_timesteps: int = 300_000
+    learning_rate: float = 5e-4
+    buffer_size: int = 100_000
+    learning_starts: int = 5_000
+    batch_size: int = 64
+    gamma: float = 0.99
+    train_freq: int = 4
+    target_update_interval: int = 2_000
+    exploration_fraction: float = 0.3
+    exploration_final_eps: float = 0.05
+    hidden_sizes: tuple[int, ...] = (64, 64)
+    eval_every: int = 25_000
+    eval_episodes: int = 20
+    rescue_threshold: float = 0.9
+    device: str = "auto"
+    seed: int = 20250809
+    reward: RewardConfig = field(default_factory=RewardConfig)
+
+    def __post_init__(self) -> None:
+        for name in (
+            "train_seeds",
+            "eval_seeds",
+            "max_episode_steps",
+            "total_timesteps",
+            "buffer_size",
+            "batch_size",
+            "train_freq",
+            "target_update_interval",
+            "eval_every",
+            "eval_episodes",
+        ):
+            if getattr(self, name) <= 0:
+                raise ConfigValidationError(f"dqn.{name} must be positive")
+        if self.learning_starts < 0:
+            raise ConfigValidationError("dqn.learning_starts must be non-negative")
+        if self.learning_rate <= 0.0:
+            raise ConfigValidationError("dqn.learning_rate must be positive")
+        for name in ("gamma", "exploration_fraction", "exploration_final_eps"):
+            if not 0.0 <= getattr(self, name) <= 1.0:
+                raise ConfigValidationError(f"dqn.{name} must be within 0.0-1.0")
+        if not 0.0 < self.rescue_threshold <= 1.0:
+            raise ConfigValidationError("dqn.rescue_threshold must be within (0, 1]")
+        if not self.hidden_sizes or any(size <= 0 for size in self.hidden_sizes):
+            raise ConfigValidationError("dqn.hidden_sizes must be a non-empty list of positives")
+
+    @property
+    def training_seeds(self) -> range:
+        """The hazard seeds training episodes draw from."""
+        return range(self.seed_base, self.seed_base + self.train_seeds)
+
+    @property
+    def evaluation_seeds(self) -> range:
+        """Held-out seeds, directly after the training ones."""
+        first = self.seed_base + self.train_seeds
+        return range(first, first + self.eval_seeds)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Root application configuration, composing the other config files.
 
