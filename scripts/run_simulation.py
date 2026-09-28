@@ -12,23 +12,33 @@ Usage:
     python scripts/run_simulation.py --perception --device cuda
     python scripts/run_simulation.py --perception --denoiser models/autoencoder/sentry/best.pt
     python scripts/run_simulation.py --dqn models/dqn/sentry/best.zip   # the learned driver
+    python scripts/run_simulation.py --full --device cuda   # Phase 8: every model, mission control
 
 Controls (windowed): Escape quit, Space pause, R restart the mission, Tab
 toggle manual driving, G occupancy-grid view, C camera panel, arrow keys /
-WASD to drive.
+WASD to drive. With ``--full``: 1 camera, 2 LSTM, 3 fusion, 4 denoiser, 5 DQN,
+L map lag — each switches that model off or on while the mission runs.
+F drive view (follows the vehicle), V 3D, S satellite, P street photos,
+[ and ] slower and faster.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+import pygame
 
 from sentry_ai.common.exceptions import ConfigurationError
 from sentry_ai.common.logging_config import get_logger, setup_logging
 from sentry_ai.config.loader import ConfigLoader
-from sentry_ai.config.schema import AppConfig
+from sentry_ai.config.schema import AppConfig, HazardConfig, SimulationConfig
+from sentry_ai.decision.emergency_brake import EmergencyBrake
+from sentry_ai.decision.fused_controller import FusedLocalController
 from sentry_ai.domain.map import CityMap
 from sentry_ai.interfaces.navigation import ILocalController
 from sentry_ai.interfaces.perception import IDenoiser
@@ -36,19 +46,25 @@ from sentry_ai.interfaces.world import IOccupancyGridSource
 from sentry_ai.navigation.astar import AStarPlanner
 from sentry_ai.perception.grid_builder import OccupancyGridBuilder
 from sentry_ai.perception.grid_source import DetectedGridSource, ModelObserver
+from sentry_ai.perception.scene_evidence import OnboardEvidenceSource
 from sentry_ai.rendering.simulation_app import (
+    MAX_SPEED,
+    MIN_SPEED,
     MissionScene,
     SimulationApp,
     build_mode_switch,
 )
+from sentry_ai.rendering.street_view import StreetPhotoLibrary
 from sentry_ai.rendering.theme import Theme
 from sentry_ai.sensors.degradation import FrameDegrader
 from sentry_ai.sensors.palette import SensorPalette
 from sentry_ai.sensors.rig import SensorRig
 from sentry_ai.simulation.engine import SimulationEngine
-from sentry_ai.simulation.grid_source import GroundTruthGridSource
+from sentry_ai.simulation.grid_source import GroundTruthGridSource, LaggedGridSource
 from sentry_ai.simulation.hazards import build_world_processes
 from sentry_ai.simulation.mission import MissionController, MissionStats
+from sentry_ai.simulation.onboard_reports import OnboardHazardReporter
+from sentry_ai.simulation.traffic import TrafficAwarePhysics, TrafficProcess
 from sentry_ai.simulation.waypoint_follower import WaypointFollower
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -60,6 +76,8 @@ def main() -> int:
     args = _parse_args()
     loader = ConfigLoader(project_root=PROJECT_ROOT)
     app_config = loader.load_app_config(args.config)
+    if args.map is not None:
+        app_config = replace(app_config, map_config_path=loader.resolve(args.map))
     setup_logging(app_config.logging_config_path)
     logger = get_logger(__name__)
 
@@ -76,6 +94,7 @@ def main() -> int:
         scene.engine.run(max_ticks=args.max_ticks)
         engine = scene.engine
     else:
+        map_data = loader.load_yaml(app_config.map_config_path)
         app = SimulationApp(
             city_map=scene.city_map,
             engine=scene.engine,
@@ -84,6 +103,11 @@ def main() -> int:
             mode_switch=scene.mode_switch,
             sensor_rig=_build_sensor_rig(loader, app_config),
             restart=lambda: _build_scene(loader, app_config, args),
+            scene=scene,
+            satellite=_load_satellite(app_config.map_config_path),
+            street=StreetPhotoLibrary.for_map(PROJECT_ROOT, app_config.map_config_path, map_data),
+            speed=args.speed,
+            metres_per_tile=_metres_per_tile(map_data),
         )
         app.run()
         # After restarts this is a different engine to the one we started
@@ -106,6 +130,8 @@ def _build_scene(
     simulation_config, vehicle_config = _load_mission_configs(loader, app_config)
     city_map = CityMap.from_config(loader.load_yaml(app_config.map_config_path))
     grid_source = _build_grid_source(loader, app_config, args, city_map)
+    lag = LaggedGridSource(grid_source, args.lag, max_lag=args.lag) if args.lag else None
+    grid_source = lag or grid_source
     mission = MissionController(
         city_map=city_map,
         grid=grid_source.grid_for(city_map, city_map.vehicle.position),
@@ -113,16 +139,115 @@ def _build_scene(
         config=simulation_config.mission,
         grid_source=grid_source,
     )
-    mode_switch = build_mode_switch(_build_driver(loader, args))
+    driver = _build_driver(loader, args)
+    camera = _build_onboard_camera(loader, app_config, args) if args.fusion_stack else None
+    brain = _build_brain(loader, args, driver, camera, city_map, mission, lag) if camera else None
+    traffic_config = simulation_config.traffic
+    traffic = TrafficProcess(traffic_config) if traffic_config.enabled else None
+    brake = EmergencyBrake(brain or driver, traffic.occupants) if traffic is not None else None
+    mode_switch = build_mode_switch(brake or brain or driver)
+    processes = build_world_processes(_hazards(simulation_config, args))
+    # With a lagging map the vehicle must still hit what is really there.
+    physics: IOccupancyGridSource | None = GroundTruthGridSource() if lag else None
+    if traffic is not None:
+        processes.append(traffic)
+        physics = TrafficAwarePhysics(physics or GroundTruthGridSource(), traffic)
     engine = SimulationEngine(
         city_map=city_map,
         mission=mission,
         controller=mode_switch,
         simulation_config=simulation_config,
         vehicle_config=vehicle_config,
-        world_processes=build_world_processes(simulation_config.hazards),
+        world_processes=processes,
+        physics_source=physics,
     )
-    return MissionScene(city_map=city_map, engine=engine, mode_switch=mode_switch)
+    return MissionScene(
+        city_map=city_map,
+        engine=engine,
+        mode_switch=mode_switch,
+        brain=brain,
+        camera=camera,
+        lag=lag,
+        traffic=traffic,
+        brake=brake,
+    )
+
+
+def _hazards(simulation_config: SimulationConfig, args: argparse.Namespace) -> HazardConfig:
+    """The configured hazards, with ``--hazard-seed`` choosing a different disaster."""
+    hazards = simulation_config.hazards
+    return hazards if args.hazard_seed is None else replace(hazards, seed=args.hazard_seed)
+
+
+def _build_onboard_camera(
+    loader: ConfigLoader, app_config: AppConfig, args: argparse.Namespace
+) -> OnboardEvidenceSource:
+    """The vehicle's own camera, through degrader, denoiser and YOLO (Phase 8)."""
+    path = app_config.sensor_config_path
+    if path is None:
+        raise ConfigurationError("the fusion stack needs 'sensor_config' set in the app config")
+    sensor_config = loader.load_sensor_config(path)
+    rig = SensorRig.from_config(sensor_config, SensorPalette.from_config(loader, path))
+    if args.onboard_weights is None:
+        return OnboardEvidenceSource(rig)
+
+    from sentry_ai.perception.yolo_detector import YoloDetector  # noqa: PLC0415
+
+    return OnboardEvidenceSource(
+        rig,
+        detector=YoloDetector(
+            loader.resolve(args.onboard_weights),
+            confidence=args.confidence,
+            image_size=args.image_size,
+            device=args.device,
+        ),
+        degrader=FrameDegrader(sensor_config.degradation, np.random.default_rng(args.seed + 1)),
+        denoiser=_build_denoiser(loader, args),
+    )
+
+
+def _build_brain(
+    loader: ConfigLoader,
+    args: argparse.Namespace,
+    driver: ILocalController,
+    camera: OnboardEvidenceSource,
+    city_map: CityMap,
+    mission: MissionController,
+    lag: LaggedGridSource | None,
+) -> FusedLocalController:
+    """DQN + LSTM + camera + fusion MLP behind one local-controller port (Phase 8).
+
+    The waypoint follower is installed as the fallback, so key ``5`` can
+    switch the learned driver out mid-mission. With a lagging map, what the
+    camera sees when fusion overrides is reported to the command center.
+    """
+    from sentry_ai.decision.mlp_fusion import MlpFusion  # noqa: PLC0415
+    from sentry_ai.sequence.lstm_predictor import LstmMotionPredictor  # noqa: PLC0415
+
+    fusion_config = loader.load_fusion_config("configs/training/fusion.yaml")
+    threshold = fusion_config.override_threshold
+    fusion = (
+        MlpFusion.from_checkpoint(loader.resolve(args.fusion), args.device, threshold)
+        if args.fusion
+        else None
+    )
+    predictor = (
+        LstmMotionPredictor.from_checkpoint(loader.resolve(args.lstm), args.device)
+        if args.lstm
+        else None
+    )
+    return FusedLocalController(
+        driver,
+        lambda: camera.evidence(city_map),
+        fusion=fusion,
+        predictor=predictor,
+        fallback=WaypointFollower(),
+        on_override=(
+            OnboardHazardReporter(lag, mission, fusion_config.report_threshold)
+            if lag and fusion_config.report_hazards
+            else None
+        ),
+    )
 
 
 def _build_grid_source(
@@ -216,6 +341,33 @@ def _parse_args() -> argparse.Namespace:
         "--dqn",
         help="Drive with a trained DQN (Phase 6) instead of the waypoint follower.",
     )
+    parser.add_argument(
+        "--map", help="Map config to run on instead of the app config's, e.g. an OSM import."
+    )
+    parser.add_argument(
+        "--hazard-seed", type=int, help="A different disaster: overrides hazards.seed."
+    )
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help=f"Simulation speed, {MIN_SPEED:g}-{MAX_SPEED:g}; 0.5 = slow motion "
+        "([ and ] change it live; default: 1).",
+    )
+    stack = parser.add_argument_group("full AI stack (Phases 7-8)")
+    stack.add_argument(
+        "--full",
+        action="store_true",
+        help="Every model at its default path, the map lag, and the mission-control strip.",
+    )
+    stack.add_argument("--fusion", help="Fusion MLP checkpoint (Phase 7).")
+    stack.add_argument("--lstm", help="Behaviour LSTM checkpoint (Phase 5).")
+    stack.add_argument(
+        "--lag", type=int, default=0, help="Command-center map lag in refreshes; L toggles it."
+    )
+    stack.add_argument(
+        "--onboard-weights", help="YOLO checkpoint for the onboard camera (default: labels)."
+    )
     perception = parser.add_argument_group("perception (Phase 3.5)")
     perception.add_argument(
         "--perception",
@@ -239,7 +391,31 @@ def _parse_args() -> argparse.Namespace:
         "--denoiser",
         help="Denoising autoencoder checkpoint (Phase 4), applied before the detector.",
     )
-    return parser.parse_args()
+    return _apply_full_preset(parser.parse_args())
+
+
+#: What ``--full`` fills in, for every flag the user left unset.
+_FULL_PRESET = {
+    "dqn": "models/dqn/sentry/best.zip",
+    "lstm": "models/lstm/sentry/best.pt",
+    "fusion": "models/fusion/sentry/best.pt",
+    "denoiser": "models/autoencoder/sentry/best.pt",
+    "onboard_weights": "models/yolo/denoised/weights/best.pt",
+}
+
+#: The map lag ``--full`` starts with, matching configs/training/fusion.yaml.
+_FULL_PRESET_LAG = 30
+
+
+def _apply_full_preset(args: argparse.Namespace) -> argparse.Namespace:
+    """Resolve ``--full`` into the individual flags, and mark the fusion stack on."""
+    if args.full:
+        for name, path in _FULL_PRESET.items():
+            if getattr(args, name) is None and (PROJECT_ROOT / path).is_file():
+                setattr(args, name, path)
+        args.lag = args.lag or _FULL_PRESET_LAG
+    args.fusion_stack = bool(args.fusion or args.lstm or args.full)
+    return args
 
 
 def _load_mission_configs(loader: ConfigLoader, app_config: AppConfig) -> tuple:
@@ -252,6 +428,25 @@ def _load_mission_configs(loader: ConfigLoader, app_config: AppConfig) -> tuple:
         loader.load_simulation_config(app_config.simulation_config_path),
         loader.load_vehicle_config(app_config.vehicle_config_path),
     )
+
+
+def _load_satellite(map_path: Path) -> pygame.Surface | None:
+    """Aerial imagery for the map, if ``fetch_satellite.py`` has fetched it.
+
+    Display only — the cameras and models never see it. Its presence turns on
+    the ``S`` key in the window.
+    """
+    path = PROJECT_ROOT / "data" / "maps" / "satellite" / f"{map_path.stem}.png"
+    return pygame.image.load(str(path)) if path.is_file() else None
+
+
+def _metres_per_tile(map_data: dict[str, Any]) -> float | None:
+    """Real size of a tile on an imported map (from its ``geo`` box), else ``None``."""
+    geo = map_data.get("geo")
+    if not isinstance(geo, dict):
+        return None
+    span = (geo["east"] - geo["west"]) * 111_320.0 * math.cos(math.radians(geo["north"]))
+    return float(span / int(map_data["width"]))
 
 
 def _build_sensor_rig(loader: ConfigLoader, app_config: AppConfig) -> SensorRig | None:

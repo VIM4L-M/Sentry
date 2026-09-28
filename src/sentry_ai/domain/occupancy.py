@@ -156,10 +156,34 @@ class OccupancyGrid:
         dynamic fact, and finding it is the detector's job.
         """
         grid = cls.empty(city_map.width, city_map.height)
+        terrain = getattr(city_map, "terrain", None)
+        default = getattr(city_map, "default_terrain", None)
+        if isinstance(terrain, dict) and isinstance(default, TerrainType):
+            # Fast path for CityMap's layout: one vectorised write instead of
+            # a tile_at call per tile, and none at all while the layout's
+            # version is unchanged. On a 200x200 city the loop below cost
+            # 0.1 s, twice a tick.
+            version = getattr(terrain, "version", None)
+            cached = getattr(terrain, "occupancy_cache", None)
+            if version is not None and cached is not None and cached[0] == version:
+                grid.cells[:, :] = cached[1]
+                return grid
+            grid.cells[:, :] = TERRAIN_TO_OCCUPANCY[default]
+            if terrain:
+                xs = np.fromiter((p.x for p in terrain), dtype=np.intp, count=len(terrain))
+                ys = np.fromiter((p.y for p in terrain), dtype=np.intp, count=len(terrain))
+                codes = np.fromiter(
+                    (TERRAIN_TO_OCCUPANCY[t] for t in terrain.values()),
+                    dtype=np.uint8,
+                    count=len(terrain),
+                )
+                grid.cells[ys, xs] = codes
+            if version is not None:
+                setattr(terrain, "occupancy_cache", (version, grid.cells.copy()))  # noqa: B010
+            return grid
         for y in range(city_map.height):
             for x in range(city_map.width):
-                terrain = city_map.tile_at(Position(x, y))
-                grid.cells[y, x] = TERRAIN_TO_OCCUPANCY[terrain]
+                grid.cells[y, x] = TERRAIN_TO_OCCUPANCY[city_map.tile_at(Position(x, y))]
         return grid
 
     @classmethod
@@ -300,5 +324,3 @@ def tiles_within(center: Position, radius: int, width: int, height: int) -> list
             if center.distance_to(position) <= radius:
                 tiles.append(position)
     return tiles
-
-

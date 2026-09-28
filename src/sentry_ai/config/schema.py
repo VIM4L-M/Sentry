@@ -270,6 +270,53 @@ class HazardConfig:
 
 
 @dataclass(frozen=True)
+class TrafficConfig:
+    """Other road users: cars and pedestrians sharing the streets (Phase 9).
+
+    Off by default, so every earlier map, test and trained model is
+    unchanged. The command center's map never contains them — they move too
+    fast to plan around — so only the vehicle's own sensors and its
+    emergency brake stand between it and a collision.
+
+    Attributes:
+        enabled: Whether any traffic is spawned.
+        cars: Cars driving the road tiles.
+        pedestrians: People walking the pavements, sometimes crossing.
+        car_step_ticks: Ticks between a car's moves (the rescue vehicle
+            moves every tick, so cars are slower and it can catch up).
+        pedestrian_step_ticks: Ticks between a pedestrian's steps.
+        crossing_chance: Chance a pedestrian at the kerb steps into the road.
+        seed: Seed for spawning and every choice an agent makes.
+    """
+
+    enabled: bool = False
+    cars: int = 0
+    pedestrians: int = 0
+    car_step_ticks: int = 2
+    pedestrian_step_ticks: int = 4
+    crossing_chance: float = 0.15
+    seed: int = 20250928
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("cars", self.cars),
+            ("pedestrians", self.pedestrians),
+        ):
+            if value < 0:
+                raise ConfigValidationError(f"traffic.{name} must be non-negative, got {value}")
+        for name, value in (
+            ("car_step_ticks", self.car_step_ticks),
+            ("pedestrian_step_ticks", self.pedestrian_step_ticks),
+        ):
+            if value < 1:
+                raise ConfigValidationError(f"traffic.{name} must be at least 1, got {value}")
+        if not 0.0 <= self.crossing_chance <= 1.0:
+            raise ConfigValidationError(
+                f"traffic.crossing_chance must be within 0.0-1.0, got {self.crossing_chance}"
+            )
+
+
+@dataclass(frozen=True)
 class SimulationConfig:
     """Timing and rules for the tick-based simulation engine.
 
@@ -280,12 +327,14 @@ class SimulationConfig:
         mission: Mission success/failure/replanning rules.
         planner: Global route-planner cost model.
         hazards: Processes that evolve the city on their own.
+        traffic: Cars and pedestrians sharing the streets; off by default.
     """
 
     tick_rate_hz: float = 10.0
     mission: MissionConfig = field(default_factory=MissionConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     hazards: HazardConfig = field(default_factory=HazardConfig)
+    traffic: TrafficConfig = field(default_factory=TrafficConfig)
 
     def __post_init__(self) -> None:
         if self.tick_rate_hz <= 0.0:
@@ -998,3 +1047,120 @@ class AppConfig:
             raise ConfigValidationError(
                 f"app.map_config must point at a file, got {self.map_config_path}"
             )
+
+
+@dataclass(frozen=True)
+class FusionTrainingConfig:
+    """Scenario, data and hyperparameters for the fusion MLP (Unit I).
+
+    Attributes:
+        dataset_dir: Where ``train_fusion.py`` writes the collected samples.
+        runs_dir: Where checkpoints and the metric log are written.
+        dqn_weights: The DQN whose decisions fusion arbitrates.
+        lstm_weights: The motion predictor fusion listens to.
+        belief_lag: Refreshes the command center's map trails the world by
+            — the Phase 7 scenario. With no lag the planner already routes
+            around every hazard and fusion has nothing to correct.
+        train_missions: Missions collected for training.
+        val_missions: Held-out missions for validation, never trained on.
+        eval_missions: Further held-out missions for the mission-level
+            comparison in ``evaluate_fusion.py``.
+        seed_base: First training seed; validation and evaluation seeds
+            follow in order, clear of the DQN's own seed range.
+        oracle_drive_probability: Share of collection ticks driven by the
+            ground-truth decision instead of the DQN's. Pure DQN driving
+            only visits the states the DQN reaches; mixing in the corrected
+            action shows the network what happens after a correction too.
+        max_ticks: Hard stop per mission.
+        hidden_sizes: Width of each hidden layer.
+        dropout: Dropout after every hidden activation.
+        epochs: Maximum passes over the training samples.
+        batch_size: Samples per optimisation step.
+        learning_rate: Adam step size.
+        weight_decay: Adam L2 penalty.
+        patience: Epochs without a validation improvement before stopping.
+        override_threshold: At inference, the probability fusion's choice
+            needs before it may overrule the DQN.
+        report_hazards: Whether a fusion override also reports what the
+            camera saw to the command center's map, which then replans.
+            Off by default: measured on 40 missions it removed the last few
+            collisions but cost a third of the completed missions.
+        report_threshold: Camera confidence needed before a hazard seen
+            ahead is reported to the command center's map.
+        critical_weight: Loss weight on ticks where the DQN, reading the
+            stale map, disagrees with the ground-truth decision. They are a
+            few percent of all ticks and the only ones where fusion earns
+            its place.
+        device: ``"auto"``, ``"cpu"``, ``"cuda"``, or a device index.
+        seed: Fixed so a run is reproducible.
+    """
+
+    dataset_dir: Path = Path("data/fusion")
+    runs_dir: Path = Path("models/fusion")
+    dqn_weights: Path = Path("models/dqn/sentry/best.zip")
+    lstm_weights: Path = Path("models/lstm/sentry/best.pt")
+    belief_lag: int = 30
+    train_missions: int = 120
+    val_missions: int = 30
+    eval_missions: int = 40
+    seed_base: int = 5000
+    oracle_drive_probability: float = 0.3
+    max_ticks: int = 3000
+    hidden_sizes: tuple[int, ...] = (64, 32)
+    dropout: float = 0.2
+    epochs: int = 60
+    batch_size: int = 256
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-4
+    patience: int = 10
+    critical_weight: float = 2.0
+    override_threshold: float = 0.8
+    report_hazards: bool = False
+    report_threshold: float = 0.5
+    device: str = "auto"
+    seed: int = 20250810
+
+    def __post_init__(self) -> None:
+        for name in (
+            "train_missions",
+            "val_missions",
+            "eval_missions",
+            "max_ticks",
+            "epochs",
+            "batch_size",
+        ):
+            if getattr(self, name) <= 0:
+                raise ConfigValidationError(f"fusion.{name} must be positive")
+        if self.belief_lag < 0 or self.patience < 0:
+            raise ConfigValidationError("fusion.belief_lag and fusion.patience must be >= 0")
+        if not 0.0 <= self.oracle_drive_probability <= 1.0:
+            raise ConfigValidationError("fusion.oracle_drive_probability must be within 0.0-1.0")
+        if not 0.0 <= self.dropout < 1.0:
+            raise ConfigValidationError("fusion.dropout must be within [0, 1)")
+        if self.learning_rate <= 0.0 or self.critical_weight <= 0.0:
+            raise ConfigValidationError("fusion.learning_rate and critical_weight must be positive")
+        if self.weight_decay < 0.0:
+            raise ConfigValidationError("fusion.weight_decay must be non-negative")
+        if not 0.0 <= self.report_threshold <= 1.0:
+            raise ConfigValidationError("fusion.report_threshold must be within 0.0-1.0")
+        if not 0.0 <= self.override_threshold <= 1.0:
+            raise ConfigValidationError("fusion.override_threshold must be within 0.0-1.0")
+        if not self.hidden_sizes or any(size <= 0 for size in self.hidden_sizes):
+            raise ConfigValidationError("fusion.hidden_sizes must be a non-empty list of positives")
+
+    @property
+    def training_seeds(self) -> range:
+        """Hazard seeds of the training missions."""
+        return range(self.seed_base, self.seed_base + self.train_missions)
+
+    @property
+    def validation_seeds(self) -> range:
+        """Hazard seeds of the validation missions."""
+        start = self.seed_base + self.train_missions
+        return range(start, start + self.val_missions)
+
+    @property
+    def evaluation_seeds(self) -> range:
+        """Hazard seeds of the mission-level evaluation."""
+        start = self.seed_base + self.train_missions + self.val_missions
+        return range(start, start + self.eval_missions)

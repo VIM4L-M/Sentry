@@ -31,6 +31,10 @@ data/processed/**
 data/synthetic/**
 data/denoised/**
 data/trajectories/**
+data/fusion/**
+data/maps/osm_cache/**
+data/maps/satellite/**
+data/maps/street/**
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 

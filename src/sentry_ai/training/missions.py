@@ -25,7 +25,9 @@ from sentry_ai.domain.entities import Position
 from sentry_ai.domain.enums import TerrainType
 from sentry_ai.domain.map import CityMap
 from sentry_ai.interfaces.navigation import ILocalController
+from sentry_ai.interfaces.world import IOccupancyGridSource
 from sentry_ai.simulation.factory import Mission, build_mission
+from sentry_ai.simulation.grid_source import GroundTruthGridSource, LaggedGridSource
 
 #: Builds a fresh mission for a seed, driven by the given controller (or the
 #: default waypoint follower when ``None``).
@@ -41,6 +43,7 @@ class MissionFactory:
         simulation_config: SimulationConfig,
         vehicle_config: VehicleConfig,
         randomise_start: bool = True,
+        belief_lag: int = 0,
     ) -> None:
         """Create a factory.
 
@@ -51,16 +54,31 @@ class MissionFactory:
             vehicle_config: Vehicle physics.
             randomise_start: Start each mission on a road tile drawn from
                 its seed. ``False`` keeps the map's own start tile.
+            belief_lag: Refreshes the command center's map trails the world
+                by. ``0`` is the fresh ground-truth map of Phases 2-6. Above
+                that the map lags, and the vehicle's physics switches to
+                the true world, so a hazard the map has not caught up with
+                can still be hit — the Phase 7 scenario.
+
+        Raises:
+            ValueError: If ``belief_lag`` is negative.
         """
+        if belief_lag < 0:
+            raise ValueError(f"belief_lag must be non-negative, got {belief_lag}")
         self._map_data = map_data
         self._simulation_config = simulation_config
         self._vehicle_config = vehicle_config
         self._randomise_start = randomise_start
+        self._belief_lag = belief_lag
         self._starts = start_positions(CityMap.from_config(map_data))
 
     @classmethod
     def from_app_config(
-        cls, loader: ConfigLoader, app_config: AppConfig, randomise_start: bool = True
+        cls,
+        loader: ConfigLoader,
+        app_config: AppConfig,
+        randomise_start: bool = True,
+        belief_lag: int = 0,
     ) -> MissionFactory:
         """A factory for the map and rules ``app_config`` points at.
 
@@ -77,6 +95,7 @@ class MissionFactory:
             simulation_config=loader.load_simulation_config(app_config.simulation_config_path),
             vehicle_config=loader.load_vehicle_config(app_config.vehicle_config_path),
             randomise_start=randomise_start,
+            belief_lag=belief_lag,
         )
 
     def build(self, seed: int, controller: ILocalController | None = None) -> Mission:
@@ -91,7 +110,17 @@ class MissionFactory:
             vehicle_config=self._vehicle_config,
             controller=controller,
             hazard_seed=seed,
+            **self._belief_sources(),
         )
+
+    def _belief_sources(self) -> dict[str, IOccupancyGridSource]:
+        """The grid and physics sources for the configured lag, if any."""
+        if self._belief_lag == 0:
+            return {}
+        return {
+            "grid_source": LaggedGridSource(GroundTruthGridSource(), self._belief_lag),
+            "physics_source": GroundTruthGridSource(),
+        }
 
     def map_data_for(self, seed: int) -> dict[str, Any]:
         """The map config for ``seed``, with its start tile applied.

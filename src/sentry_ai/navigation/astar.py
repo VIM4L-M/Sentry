@@ -15,7 +15,10 @@ positions. That is a 4x larger state space and still trivial at city scale.
 from __future__ import annotations
 
 import heapq
+from collections.abc import Callable
 from itertools import count
+
+import numpy as np
 
 from sentry_ai.common.logging_config import get_logger
 from sentry_ai.common.types import GridCoordinate
@@ -35,6 +38,12 @@ _STEP_COST = 1.0
 _NO_HEADING = -1
 
 _HEADINGS: tuple[Heading, ...] = (Heading.NORTH, Heading.EAST, Heading.SOUTH, Heading.WEST)
+
+#: ``_HEADINGS``' step offsets, looked up once instead of per expanded node.
+_DELTAS: tuple[tuple[int, int], ...] = tuple(heading.delta for heading in _HEADINGS)
+
+#: Codes no route may enter; mirrors ``OccupancyCode.is_traversable``.
+_IMPASSABLE = tuple(code for code in OccupancyCode if not code.is_traversable)
 
 #: A search node: the tile, and the index into ``_HEADINGS`` of the move
 #: that entered it (or ``_NO_HEADING`` at the start).
@@ -74,6 +83,7 @@ class AStarPlanner(IRoutePlanner):
             return Route(waypoints=(start,), cost=0.0)
 
         risk = self._risk_field(grid)
+        passable = _passable_lookup(grid)
         goal_coord = goal.as_tuple()
         start_state: _State = (start.as_tuple(), _NO_HEADING)
 
@@ -90,7 +100,7 @@ class AStarPlanner(IRoutePlanner):
             if coord == goal_coord:
                 return self._reconstruct(came_from, state, best_cost[state])
 
-            for neighbour, step_cost in self._neighbours(grid, state, risk):
+            for neighbour, step_cost in self._neighbours(passable, state, risk):
                 tentative = best_cost[state] + step_cost
                 if tentative >= best_cost.get(neighbour, float("inf")):
                     continue
@@ -108,20 +118,16 @@ class AStarPlanner(IRoutePlanner):
 
     def _neighbours(
         self,
-        grid: OccupancyGridLike,
+        passable: Callable[[int, int], bool],
         state: _State,
         risk: dict[GridCoordinate, float],
     ) -> list[tuple[_State, float]]:
         """Every traversable state reachable in one step, with its entry cost."""
         (x, y), previous_heading = state
         results: list[tuple[_State, float]] = []
-        for index, heading in enumerate(_HEADINGS):
-            dx, dy = heading.delta
+        for index, (dx, dy) in enumerate(_DELTAS):
             nx, ny = x + dx, y + dy
-            if nx < 0 or ny < 0:
-                continue
-            neighbour = Position(nx, ny)
-            if not grid.is_traversable(neighbour):
+            if nx < 0 or ny < 0 or not passable(nx, ny):
                 continue
             cost = _STEP_COST + risk.get((nx, ny), 0.0)
             if previous_heading != _NO_HEADING and index != previous_heading:
@@ -142,11 +148,8 @@ class AStarPlanner(IRoutePlanner):
 
         radius = config.fire_risk_radius
         risk: dict[GridCoordinate, float] = {}
-        for y in range(grid.height):
-            for x in range(grid.width):
-                if grid.code_at(Position(x, y)) is not OccupancyCode.FIRE:
-                    continue
-                self._accumulate_risk(risk, Position(x, y), radius, config.fire_risk_penalty)
+        for x, y in _fire_tiles(grid):
+            self._accumulate_risk(risk, Position(x, y), radius, config.fire_risk_penalty)
         return risk
 
     @staticmethod
@@ -184,3 +187,35 @@ class AStarPlanner(IRoutePlanner):
             state = came_from.get(state)
         coords.reverse()
         return Route(waypoints=tuple(Position(x, y) for x, y in coords), cost=cost)
+
+
+def _passable_lookup(grid: OccupancyGridLike) -> Callable[[int, int], bool]:
+    """``(x, y) -> traversable``, precomputed once per search when the grid allows.
+
+    On an :class:`~sentry_ai.domain.occupancy.OccupancyGrid` the whole
+    traversability mask is taken from its ``cells`` array in one numpy call
+    and read as nested lists; asking the grid tile by tile built a
+    ``Position`` and an ``OccupancyCode`` per lookup and made a single plan on
+    a 200x200 city take 0.4 s. Any other grid falls back to asking it.
+    """
+    cells = getattr(grid, "cells", None)
+    if isinstance(cells, np.ndarray) and cells.ndim == 2:
+        blocked = np.isin(cells, [int(code) for code in _IMPASSABLE])
+        rows: list[list[bool]] = (~blocked).tolist()
+        height, width = cells.shape
+        return lambda x, y: x < width and y < height and rows[y][x]
+    return lambda x, y: grid.is_traversable(Position(x, y))
+
+
+def _fire_tiles(grid: OccupancyGridLike) -> list[GridCoordinate]:
+    """Every tile the grid marks as fire, found with numpy when it can be."""
+    cells = getattr(grid, "cells", None)
+    if isinstance(cells, np.ndarray) and cells.ndim == 2:
+        ys, xs = np.nonzero(cells == int(OccupancyCode.FIRE))
+        return [(int(x), int(y)) for y, x in zip(ys, xs, strict=True)]
+    return [
+        (x, y)
+        for y in range(grid.height)
+        for x in range(grid.width)
+        if grid.code_at(Position(x, y)) is OccupancyCode.FIRE
+    ]

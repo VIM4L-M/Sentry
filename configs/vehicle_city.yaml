@@ -1,0 +1,19 @@
+# Rescue vehicle for city-sized maps (e.g. configs/maps/osm_barcelona.yaml,
+# 200x200 tiles of 20 m = 4 km across). Same model as configs/vehicle.yaml;
+# only the battery is sized for the distance: a 30x20 crossing is ~50 tiles,
+# a district mission several hundred.
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_vehicle_config().
+
+capacity: 2
+
+battery:
+  initial_percent: 100.0
+  # About 1,200 tiles (24 km) of driving on one charge.
+  drain_per_move: 0.08
+  drain_per_turn: 0.03
+  drain_per_idle_tick: 0.005
+
+collision_damage_percent: 5.0
+fire_damage_per_tick: 2.0
+
+sensor_range_tiles: 5.0

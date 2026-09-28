@@ -1,0 +1,55 @@
+# Simulation rules for city-sized maps (configs/app_city.yaml). The same
+# engine and hazards as configs/simulation.yaml, retuned for a district
+# where a victim can be a kilometre away: victims hold out longer and the
+# mission clock is longer, so distance alone does not decide who is lost.
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_simulation_config().
+
+tick_rate_hz: 10.0
+
+mission:
+  time_limit_seconds: 900.0
+  replan_on_blocked_route: true
+  min_battery_to_continue: 15.0
+  # Tiles of detour a dying victim is worth; scaled with the map.
+  urgency_weight: 40.0
+
+planner:
+  fire_risk_penalty: 6.0
+  fire_risk_radius: 2
+  turn_penalty: 0.4
+
+hazards:
+  seed: 20250805
+  fire:
+    enabled: true
+    interval_seconds: 3.0
+    growth_per_step: 0.12
+    burnout_per_step: 0.18
+    ignition_chance: 0.16
+    max_radius: 3
+    max_active_fires: 16
+  victims:
+    enabled: true
+    # Half the small city's rate: about 200 s for a victim away from fire.
+    interval_seconds: 2.0
+    base_drain: 1
+    fire_drain: 6
+    fire_radius: 5.0
+  debris:
+    enabled: true
+    interval_seconds: 3.0
+    collapse_chance: 0.5
+    max_collapses: 20
+
+# Other road users. Not on the command center's map and never seen in
+# training: only the vehicle's surround sensors and its emergency brake
+# (key 6) keep it from hitting them.
+traffic:
+  enabled: true
+  cars: 350
+  pedestrians: 450
+  # The rescue vehicle moves every tick; cars every 2nd, people every 4th.
+  car_step_ticks: 2
+  pedestrian_step_ticks: 4
+  crossing_chance: 0.15
+  seed: 20250928

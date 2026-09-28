@@ -1,0 +1,35 @@
+# Disaster city generated from OpenStreetMap: 12.97144, 80.04383
+# Centre 12.97144, 80.04383; 35 m per tile; 60 OSM elements;
+# disaster staged with seed 0 by scripts/import_osm_map.py.
+# Streets are from OpenStreetMap; most BUILDINGS ARE INFERRED (open land 2+ tiles
+# from a road filled in), because OSM has few building outlines for this area.
+# Map data (c) OpenStreetMap contributors, available under the Open Database
+# License (ODbL): https://www.openstreetmap.org/copyright
+
+width: 30
+height: 20
+terrain_legend: {.: open_ground, '#': building, '=': road, x: collapsed_building, r: rubble, t: tree, '!': blocked_road}
+grid: ['###########.=.#.#..===========', '###########.=..=.====..=...=..', '############.x.====....=..==.#', '#############.===..#.===..=.##', '###########..==..####....===..', '##########.===.#########.=.===',
+  '#########.==..#########.==..==', '#######..====.........#.=.#.==', '#####..===..==========.===.===', '###..=====.#...........=====.=', '...===.=.=..######r##.========', =====..=====.###..x#.========.,
+  ==...#.====.rx#.==...=========, ..####.=====..================, '######.===..=====.=========..=', '######.=..##.====.=======.====', '#######.#####.================', '##############..=.===========.',
+  '###############.=========...==', '################.=====.=======']
+safe_zone:
+  position: [1, 10]
+  radius: 2
+  capacity: 4
+vehicle_start: [0, 11]
+victims:
+- id: victim_01
+  position: [14, 2]
+- id: victim_02
+  position: [7, 16]
+- id: victim_03
+  position: [26, 8]
+- id: victim_04
+  position: [18, 12]
+fires:
+- id: fire_01
+  position: [14, 0]
+  intensity: 0.6
+  radius: 1
+geo: {south: 12.968300110887531, west: 80.03899346890442, north: 12.97458828911247, east: 80.04867273109558}

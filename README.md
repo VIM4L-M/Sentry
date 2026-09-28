@@ -13,8 +13,11 @@ whose output builds the occupancy grid the planner reasons over — the vehicle
 can complete a rescue on what it *sees* rather than on ground truth. Phase 4
 (denoising autoencoder) is complete: the denoiser slots in front of the detector
 with `--denoiser`, and at double the smoke it lifts victim recall from 0.86 to 0.99
-(M4). Phase 5 (behaviour LSTM) meets M5, and Phase 6 (DQN driving policy) meets M6. See PROJECT.md §10-11 for the phase breakdown and
-milestones.
+(M4). Phase 5 (behaviour LSTM) meets M5, and Phase 6 (DQN driving policy) meets M6.
+Phase 7's fusion MLP meets M7, Phase 8 runs all five models live (M8), and Phase 9
+adds a mission-control screen with live ablation keys, real cities from
+OpenStreetMap, a 3D view, and a one-command demo. See PROJECT.md §10-11 for the phase
+breakdown and milestones.
 
 ## Quick Start
 
@@ -322,6 +325,268 @@ with a perfect map the planner absorbs every surprise, so the learned driver's r
 test is on the camera-built map in Phase 8. Details in
 [`docs/architecture/phase6-reinforcement.md`](docs/architecture/phase6-reinforcement.md).
 
+## Phase 7 — Decision Fusion MLP (Unit I)
+
+```bash
+python scripts/train_fusion.py --detector models/yolo/denoised/weights/best.pt \
+    --denoiser models/autoencoder/sentry/best.pt --device cuda     # ~25 min collect + train
+python scripts/evaluate_fusion.py --detector models/yolo/denoised/weights/best.pt \
+    --denoiser models/autoencoder/sentry/best.pt --device cuda     # 40 whole missions
+```
+
+`MlpFusion` (Linear -> ReLU -> Dropout, trained with Adam) takes three inputs and
+picks the action the vehicle executes:
+- the DQN's Q-values,
+- the LSTM's behaviour prediction,
+- what the vehicle's own camera sees, projected egocentrically (debris *ahead*,
+  fire on the *left*...).
+
+**Fusion needs something to fix.** With a current map the planner routes around every
+hazard and the DQN never crashes, so fusion is judged where real systems need it: the
+command center's map **lags the world by 3 s**. The DQN, driving on that stale map,
+crashes into collapses the map has not heard of. The onboard camera sees them. Labels
+are exact and free: each tick the DQN is also asked what it would do on the *true*
+map.
+
+| held-out ticks | accuracy | DQN mistakes caught | correct choices wrongly changed |
+|---|---|---|---|
+| DQN alone | 0.992 | 0% | 0% |
+| **fusion** | 0.985 | **89.5%** | 1.4% |
+| trained on camera only | 0.752 | 50.9% | 24.6% |
+| trained on LSTM only | 0.516 | 15.8% | 48.1% |
+
+Only the combination does both: it catches the mistakes (the camera) and leaves the
+correct choices alone (the DQN). That is milestone M7.
+
+| 40 whole missions, 3 s map lag | rescued | lost | collisions | damage | completed |
+|---|---|---|---|---|---|
+| fresh map, DQN (ceiling) | 150 | 4 | 0 | 28 | 40/40 |
+| lagged map, DQN | 141 | 10 | 71 | 423 | 38/40 |
+| **lagged map, fusion** | **138** | **9** | **9** | **127** | **37/40** |
+
+Collisions fall 87% and damage 70%, for 3 fewer rescues. Fire is projected by tile
+centre, as in the CCTV grid, so a fire *beside* the street is not mistaken for one
+ahead. An optional mode also reports what the camera saw to the command center's
+map: 0 collisions, but 26 of 40 missions completed. On real streets it was never
+trained on, reports pay off when the camera is right; details in the Phase 7 notes. With a perfect camera, fusion matched
+the fresh-map ceiling. Full story, including the metric that turned out to be wrong,
+in [`docs/architecture/phase7-fusion.md`](docs/architecture/phase7-fusion.md).
+
+## Phase 8 — Full Autonomy (all five models)
+
+```bash
+python scripts/run_simulation.py --full --device cuda
+```
+
+`--full` composes every model behind the one `ILocalController` port the engine
+already had, so the engine itself is unchanged:
+
+```
+onboard camera -> FrameDegrader -> autoencoder -> YOLOv8n -> SceneEvidence --+
+vehicle states  -> LSTM behaviour predictor -----------------------------------+--> fusion MLP --> action
+stale-map observation -> DQN Q-values -----------------------------------------+
+```
+
+`FusedLocalController` runs the DQN, the LSTM and the camera each tick, and
+the fusion network makes the final call. A 3 s map lag is on from the start.
+Individual models can also be given explicitly: `--dqn`, `--lstm`, `--fusion`,
+`--onboard-weights`, `--denoiser`, `--lag`.
+
+## Phase 9 — Mission Control, Real Cities, 3D, Demo
+
+**Mission control.** With `--full`, a strip on the right of the window shows,
+live, every input to the vehicle's decision:
+
+- the DQN's Q-value for each action,
+- the LSTM's predicted behaviour,
+- what the onboard camera sees around the vehicle (class x ahead/left/right/behind),
+- the fusion network's final action, flagged `OVERRIDE` when it overrules the DQN,
+- running counts of overrides and collisions.
+
+**Ablation keys** switch models off and on while the mission runs:
+
+| Key | Model |
+|---|---|
+| `1` | onboard camera + YOLO |
+| `2` | LSTM |
+| `3` | fusion MLP (off = the DQN drives unchecked) |
+| `4` | denoising autoencoder |
+| `5` | DQN (off = the hand-written waypoint follower) |
+| `L` | the command-center map lag |
+| `V` | top-down / isometric 3D view |
+| `F` | drive view: follows the vehicle, map turns with it (city-sized maps open in it) |
+| `6` | emergency brake for cars and pedestrians (maps with traffic) |
+| `[` / `]` | halve / double the simulation speed (0.25x to 2x) |
+| `S` | satellite imagery / drawn map (imported maps) |
+| `P` | street-photo column (maps with photos fetched) |
+
+**Real cities from OpenStreetMap.** Any place can become a disaster city:
+
+```bash
+python scripts/import_osm_map.py --place "Kattankulathur, Chengalpattu" --name ktr
+python scripts/run_simulation.py --map configs/maps/osm_ktr.yaml --full
+```
+
+The importer does five things:
+
+1. Fetches the streets and buildings around the place from OpenStreetMap
+   (cached under `data/maps/osm_cache`).
+2. Rasterises them onto the shipped 30x20 grid at 15 m per tile, about
+   450 m x 300 m of real city, so every trained model and camera works on it
+   unchanged.
+3. Walls off courtyards no road reaches.
+4. Stages a seeded disaster: collapsed buildings, victims, fires, and the
+   hospital on OSM's own hospital when the area has one.
+5. Writes `configs/maps/osm_<name>.yaml`, with a check that every victim is
+   reachable.
+
+A mission then loads the file offline. `configs/maps/osm_tnagar.yaml`
+(T. Nagar, Chennai) ships as an example.
+
+On that map, no model had seen the layout before:
+- the DQN completed its mission (3 rescued, 1 lost to the victim clock, 0 collisions);
+- the CCTV + YOLO pipeline built a grid that gave the same result as ground truth.
+
+Map data © OpenStreetMap contributors (ODbL).
+
+**Satellite view.** For an imported map, fetch the real aerial imagery once:
+
+```bash
+python scripts/fetch_satellite.py --map configs/maps/osm_cit.yaml
+```
+
+The window then opens on the satellite picture of the area, with fire, victims,
+rubble, the vehicle and its route drawn on top. Press `S` to switch back to the
+drawn map. The simulated cameras and every model still see the rendered city
+they were trained on: the imagery is for the people watching. The college map
+(`configs/maps/osm_cit.yaml`, around Chennai Institute of Technology) uses real
+OpenStreetMap streets. Most of its buildings are inferred, because OSM has few
+building outlines there; the file header says so. Imagery © Esri, Maxar,
+Earthstar Geographics.
+
+**Street photos (Mapillary).** Real dashcam photos along the streets, shown live in
+a column beside mission control: the photo nearest the vehicle, facing its way, above
+what the AI actually sees. Needs a free Mapillary client token in `MAPILLARY_TOKEN`,
+used only to fetch; the photos are then cached for offline use:
+
+```bash
+python scripts/fetch_street_photos.py --map configs/maps/osm_annanagar.yaml
+python scripts/run_simulation.py --full --map configs/maps/osm_annanagar.yaml --hazard-seed 1
+```
+
+Coverage decides where this works. Scanning Chennai, Anna Nagar had the best:
+photos within 40 m of 45% of its road tiles (607 photos), against 17% around the
+college and none in Kundrathur. Elsewhere the panel says how far the nearest photo
+is, or that there is none. Photos © Mapillary contributors, CC BY-SA 4.0. `P`
+toggles the column.
+
+On Anna Nagar the battery budget is tight: with the default hazard seed, fusion's
+extra waiting ran the battery out after 2 rescues where the DQN alone finished. With
+`--hazard-seed 1` both complete with 4 rescued, fusion with 0 collisions.
+
+**3D view.** Press `V` for an isometric view of the same mission:
+- buildings extruded as blocks,
+- collapsed buildings as stumps,
+- fire burning on the rooftops,
+- the vehicle as a small truck.
+
+It is pure pygame with no 3D-engine dependency, so it runs anywhere the 2D view does.
+
+**Smooth, slow driving.** In the top-down view the vehicle glides from tile to tile
+and swings through its turns, like a car in a game, instead of hopping
+(`rendering/motion.py`). Only the drawn position is smoothed; the simulation and
+every model still move tile by tile.
+
+`--speed 0.5` plays the mission in slow motion, and `[` / `]` change the speed live
+(0.25x to 2x). The demo runs every scene at 0.5x. Speed changes only how fast ticks
+happen, never what a tick does, so results are identical at any speed.
+
+**A whole district: Chicago and the drive view.** The importer is not limited to
+the 30x20 grid. `configs/maps/osm_chicago.yaml` is 4 km x 4 km of Chicago's West
+Side (Humboldt Park, Ukrainian Village, West Town), 200x200 tiles of 20 m (40,000
+tiles, 67 times the shipped city), with 6 victims, 4 fires and 12 collapses:
+
+```bash
+python scripts/import_osm_map.py --lat 41.8960 --lon -87.6850 --name chicago \
+    --tile-metres 20 --width 200 --height 200 --victims 6 --fires 4 --collapses 12 \
+    --min-distance 15 --max-distance 70 --min-street-share 0.12 --seed 1
+python scripts/fetch_satellite.py --map configs/maps/osm_chicago.yaml
+python scripts/run_simulation.py --config configs/app_city.yaml --full --speed 0.5
+```
+
+Chicago rather than Barcelona, which was tried first: Barcelona's Eixample grid
+runs at 45 degrees to north, and on a north-aligned tile grid its streets become
+staircases the vehicle turns on at every tile. Chicago's grid runs exactly
+north-south, so the vehicle drives long straight streets, and the grid continues
+for kilometres in every direction.
+
+`configs/app_city.yaml` pairs the map with a battery sized for kilometres
+(`vehicle_city.yaml`) and victims that hold out longer (`simulation_city.yaml`).
+Nothing was retrained: the DQN drives on 7 egocentric numbers, so the city's size
+never reaches it.
+
+On a map this size the window opens in the **drive view** (`rendering/drive_view.py`,
+key `F`), laid out like a car's autopilot display:
+- the camera follows the vehicle and the map turns with it, so the road ahead runs
+  up the screen;
+- the A* route is a blue ribbon to the current goal;
+- corner brackets mark what the onboard model detects this tick, with its confidence;
+- a banner shows the mission phase, the goal and the distance left;
+- a minimap in the corner shows the whole city.
+
+**Traffic, pedestrians and the emergency brake.** The city config adds 350 cars
+and 450 pedestrians (`traffic:` in `simulation_city.yaml`, `simulation/traffic.py`).
+Cars drive the roads, going straight and turning at junctions; pedestrians walk
+the pavements and sometimes step out to cross. All of them give way to the
+rescue vehicle's own tile, and a blocked car turns or backs away, so traffic
+never deadlocks. They are not on the command center's map and no model was
+trained with them. What stands between the vehicle and a collision is:
+- **Surround sensors.** Four cameras, front, left, right and rear, in the column
+  beside the drive view (`rendering/surround_cameras.py`). Each one turns with the
+  vehicle and counts the cars and people in its quarter. Road users within 5
+  tiles are outlined, and the nearest three are tagged with their distance.
+- **The emergency brake** (`decision/emergency_brake.py`, key `6`). A rule-based
+  safety layer around whatever controller is driving, the same split a real car
+  makes between its learned planner and its AEB. If the next move would enter a
+  car's or a person's tile, it stops instead and waits. A red "EMERGENCY BRAKE"
+  banner shows who it stopped for. The AI panel counts brakes, and the hits made
+  while the brake was off.
+
+Driving into a road user is a collision like driving into debris
+(`TrafficAwarePhysics`). Chicago, full stack, whole missions:
+
+| Hazard seed | Brake | Hit (cars, people) | Collisions | Rescued | Mission |
+|---|---|---|---|---|---|
+| 2 | on | 0, 0 (80 brakes) | 1 | 5 of 6 | completed |
+| 2 | off | 16, 3 | 20 | 2 | failed: vehicle destroyed |
+| 3 | on | 0, 0 (68 brakes) | 2 | 3 of 6 | completed |
+| 3 | off | 7, 9 | 18 | 2 | failed: vehicle destroyed |
+
+The collisions left with the brake on are debris, not road users.
+
+Measured headless with the full stack before traffic was added, 5 hazard seeds:
+every mission completed, 4-5 of 6 rescued, 0 collisions. Three changes made the
+size practical:
+- the occupancy grid's terrain layer is cached until the city changes
+  (`TerrainLayer.version`), and built with numpy;
+- A* reads a precomputed traversability mask instead of asking tile by tile, which
+  cut one plan from 0.4 s to a few ms, with identical routes;
+- the drive view rotates with `rotate`, not `rotozoom`, and culls far road users.
+
+A tick went from 0.29 s to about 0.05 s. A frame of the whole window, with
+traffic and the four cameras, draws in about 25 ms on the 4060 laptop.
+
+**The review demo, one command:**
+
+```bash
+python scripts/demo.py --device cuda     # every scene in order; Escape moves on
+python scripts/demo.py --list            # the running order
+python scripts/demo.py --scene 5         # start from a scene
+```
+
+Each scene prints what to point out while it runs. A scene whose model is
+not trained yet is skipped with a message rather than crashing.
+
 ## Project Layout
 
 ```
@@ -337,10 +602,13 @@ src/sentry_ai/
   simulation/  Tick engine, mission state machine, vehicle physics, hazards
   sensors/     Synthetic cameras: rasterizer, ground-truth labels, frame degradation
   sequence/    Behaviour classes and the LSTM motion predictor
-  decision/    The DQN local controller (Phase 6); fusion comes in Phase 7
+  decision/    The DQN local controller (Phase 6), the fusion MLP and the fused
+               controller that runs every model together (Phases 7-8)
+  mapping/     OpenStreetMap import: real streets -> a disaster-city map
   training/    Offline only: dataset builder, YOLO + autoencoder + LSTM training,
                trajectory recording, seeding, metric logs, checkpoints
-  rendering/   Pygame map renderer, HUD, keyboard input, mission window
+  rendering/   Pygame map renderer, isometric 3D view, vehicle glide, HUD, mission-control
+               strip, keyboard input, mission window
 scripts/     Composition roots / CLI entry points
 tests/       unit / integration / e2e, mirroring src/
 docs/        Phase design notes and ADRs
@@ -383,7 +651,9 @@ built, owned by later phases).
   [Phase 3 — detection](docs/architecture/phase3-detection.md),
   [Phase 4 — denoising](docs/architecture/phase4-denoising.md),
   [Phase 5 — sequence](docs/architecture/phase5-sequence.md),
-  [Phase 6 — reinforcement](docs/architecture/phase6-reinforcement.md))
+  [Phase 6 — reinforcement](docs/architecture/phase6-reinforcement.md),
+  [Phase 7 — fusion](docs/architecture/phase7-fusion.md))
 - [`docs/adr/`](docs/adr/) — Architecture Decision Records
   ([0001 config](docs/adr/0001-config-driven-yaml-dataclasses.md),
-  [0002 two-tier navigation](docs/adr/0002-two-tier-navigation-and-command-center.md))
+  [0002 two-tier navigation](docs/adr/0002-two-tier-navigation-and-command-center.md),
+  [0003 scene evidence and map lag](docs/adr/0003-egocentric-scene-evidence-and-map-lag.md))

@@ -22,6 +22,7 @@ from sentry_ai.domain.enums import TerrainType, VictimStatus
 from sentry_ai.domain.map import CityMap
 from sentry_ai.interfaces.navigation import Route
 from sentry_ai.rendering import glyphs
+from sentry_ai.rendering.motion import VehiclePose
 from sentry_ai.rendering.theme import Theme
 from sentry_ai.sensors.camera import CameraView
 
@@ -36,6 +37,14 @@ _ROAD_TERRAIN = frozenset({TerrainType.ROAD})
 
 #: Terrain types drawn as raised blocks with a highlight edge.
 _BLOCK_TERRAIN = frozenset({TerrainType.BUILDING})
+
+#: How much the aerial imagery is dimmed toward the background, 0-255.
+_IMAGERY_DIM_ALPHA = 70
+
+#: Terrain still painted over aerial imagery: the damage a real photo lacks.
+_DAMAGE_TERRAIN = frozenset(
+    {TerrainType.COLLAPSED_BUILDING, TerrainType.RUBBLE, TerrainType.BLOCKED_ROAD}
+)
 
 #: Point size for the camera-footprint labels drawn on the map.
 _CAMERA_LABEL_SIZE_PX = 12
@@ -73,6 +82,8 @@ class MapRenderer:
         route: Route | None = None,
         previous_route: Route | None = None,
         camera_views: tuple[CameraView, ...] = (),
+        background: pygame.Surface | None = None,
+        vehicle_pose: VehiclePose | None = None,
     ) -> None:
         """Draw the city onto ``surface``.
 
@@ -85,14 +96,23 @@ class MapRenderer:
                 beneath it so a replan is legible.
             camera_views: CCTV footprints to outline and label. Empty by
                 default — the preview script wants no camera furniture.
+            background: Aerial imagery of the same area, drawn instead of
+                the terrain colours (Phase 9, ``S`` key). Hazards, people,
+                the vehicle and its route are drawn over it as usual.
+            vehicle_pose: Where to draw the vehicle between tiles
+                (:class:`~sentry_ai.rendering.motion.VehicleGlide`). ``None``
+                draws it on its tile, as the simulation has it.
         """
         surface.fill(self._theme.background.as_tuple())
-        self._draw_terrain(surface, city_map)
+        if background is None:
+            self._draw_terrain(surface, city_map)
+        else:
+            self._draw_imagery(surface, city_map, background)
         if previous_route is not None:
             self._draw_route(surface, previous_route, self._stale_route_color())
         if route is not None:
             self._draw_route(surface, route, self._theme.hud.accent)
-        self._draw_entities(surface, city_map)
+        self._draw_entities(surface, city_map, vehicle_pose)
         for view in camera_views:
             self._draw_camera_footprint(surface, view)
 
@@ -112,6 +132,24 @@ class MapRenderer:
                     self._draw_block_edge(surface, rect, terrain)
                 elif terrain in _ROAD_TERRAIN:
                     self._draw_road_marking(surface, rect, terrain)
+
+    def _draw_imagery(
+        self, surface: pygame.Surface, city_map: CityMap, background: pygame.Surface
+    ) -> None:
+        """Real imagery as the ground, dimmed so glyphs stay readable, damage marked."""
+        size = (city_map.width * self._tile_size_px, city_map.height * self._tile_size_px)
+        if background.get_size() != size:
+            background = pygame.transform.smoothscale(background, size)
+        surface.blit(background, (0, 0))
+        shade = pygame.Surface(size, pygame.SRCALPHA)
+        shade.fill((*self._theme.background.as_tuple(), _IMAGERY_DIM_ALPHA))
+        surface.blit(shade, (0, 0))
+        for y in range(city_map.height):
+            for x in range(city_map.width):
+                terrain = city_map.tile_at(Position(x, y))
+                if terrain in _DAMAGE_TERRAIN:
+                    rect = self._tile_rect(Position(x, y))
+                    pygame.draw.rect(surface, self._theme.terrain_colors[terrain].as_tuple(), rect)
 
     def _draw_block_edge(
         self, surface: pygame.Surface, rect: pygame.Rect, terrain: TerrainType
@@ -137,7 +175,9 @@ class MapRenderer:
     # Entities
     # ------------------------------------------------------------------
 
-    def _draw_entities(self, surface: pygame.Surface, city_map: CityMap) -> None:
+    def _draw_entities(
+        self, surface: pygame.Surface, city_map: CityMap, vehicle_pose: VehiclePose | None = None
+    ) -> None:
         """Draw every entity as its glyph, hazards beneath rescuables."""
         colors = self._theme.entity_colors
         # The cross is lightened rather than drawn in the safe zone's own
@@ -159,7 +199,7 @@ class MapRenderer:
             )
         for victim in city_map.victims:
             self._draw_victim(surface, victim)
-        self._draw_vehicle(surface, city_map.vehicle)
+        self._draw_vehicle(surface, city_map.vehicle, vehicle_pose)
 
     def _draw_victim(self, surface: pygame.Surface, victim: Victim) -> None:
         """Draw a victim, coloured by how much time they have left.
@@ -202,8 +242,21 @@ class MapRenderer:
         else:
             glyphs.draw_debris(surface, rect, self._theme.entity_colors[obstacle.entity_kind])
 
-    def _draw_vehicle(self, surface: pygame.Surface, vehicle: Vehicle) -> None:
-        """Draw the rescue vehicle as a chevron pointing along its heading."""
+    def _draw_vehicle(
+        self, surface: pygame.Surface, vehicle: Vehicle, pose: VehiclePose | None = None
+    ) -> None:
+        """Draw the rescue vehicle as a chevron pointing along its heading.
+
+        With ``pose``, the chevron is drawn where the glide has it — between
+        tiles and mid-turn — instead of snapped to the vehicle's tile.
+        """
+        color = self._theme.entity_colors[vehicle.entity_kind]
+        if pose is not None:
+            size = self._tile_size_px
+            rect = pygame.Rect(0, 0, size, size)
+            rect.center = (round(pose.x * size), round(pose.y * size))
+            glyphs.draw_vehicle_facing(surface, rect, color, pose.angle)
+            return
         glyphs.draw_vehicle(
             surface,
             self._tile_rect(vehicle.position),

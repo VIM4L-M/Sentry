@@ -1,7 +1,7 @@
 # SENTRY AI — Autonomous Emergency Rescue Vehicle for Disaster Zones
 
 **Type:** Semester-long Applied Deep Learning project (simulation-based)
-**Status:** Phases 1-4 complete; Phases 5 and 6 core complete — M4, M5 and M6 met (see §10)
+**Status:** Phases 1-8 complete, Phase 9 core complete — M1-M8 met (see §10-11)
 **Audience:** Single student developer, evaluated to production-software standards
 
 This document is the canonical architecture reference for SENTRY AI. It is intentionally
@@ -364,7 +364,8 @@ IMotionPredictor.predict(state_history, Detection[]) ─► BehaviourSignal
 ILocalController.decide(observation) ───► LocalDecision {action, q_values}
         │       (the route it follows comes from IRoutePlanner — see below)
         ▼
-IDecisionFusion.fuse(Detection[], BehaviourSignal, LocalDecision) ─► FinalAction
+IDecisionFusion.fuse(SceneEvidence, BehaviourSignal, LocalDecision) ─► FinalAction
+        │       (SceneEvidence: onboard detections projected egocentrically — ADR 0003)
         │
         ▼
 VehicleController.apply(FinalAction) ───► updates Vehicle, Battery, Health
@@ -411,8 +412,11 @@ the tick loop with a deterministic `WaypointFollower` — or, with `--dqn`, the 
 the command center's map is built from the cameras: frames are degraded, optionally
 denoised by the Phase 4 autoencoder, run through YOLOv8n, merged across the four
 overlapping CCTV views, and turned into the occupancy grid A\* plans over.
-`IMotionPredictor` is implemented by the Phase 5 LSTM but runs offline only — its
-consumer is Phase 7's fusion network. `IDecisionFusion` is still unfulfilled.
+With `--full` (Phase 8) every model runs live: `FusedLocalController` feeds the
+DQN's Q-values, the LSTM's behaviour signal and the onboard camera's `SceneEvidence`
+to the Phase 7 `MlpFusion`, whose action the vehicle executes. The command center's
+map can lag the world (`LaggedGridSource`); what the onboard camera sees when fusion
+overrides is reported back to that map (`OnboardHazardReporter`).
 
 ---
 
@@ -698,9 +702,9 @@ sequenceDiagram
 | 4 | Representation Learning — Denoising AE | 7 | Unit IV | ✅ **Complete** |
 | 5 | Sequence Modeling — LSTM | 8 | Unit III | ✅ **Core complete** — consumed from Phase 7 |
 | 6 | Reinforcement Learning — DQN | 9-11 | Unit V | ✅ **Core complete** — perceived-grid test in Phase 8 |
-| 7 | Decision Fusion — MLP | 12 | Unit I | ⏳ Not started |
-| 8 | End-to-End Autonomous Integration | 13 | All | ⏳ Not started |
-| 9 | Dashboard, Testing, Docs, Deployment | 14-15 | — | ⏳ Not started |
+| 7 | Decision Fusion — MLP | 12 | Unit I | ✅ **Complete** |
+| 8 | End-to-End Autonomous Integration | 13 | All | ✅ **Complete** |
+| 9 | Dashboard, Testing, Docs, Deployment | 14-15 | — | ✅ **Core complete** — no CI/packaging |
 | 10 | Stretch / Future Improvements | post-semester | — | ⏳ Not started |
 
 ### Phase 1 — Foundation & Core Architecture ✅
@@ -907,6 +911,12 @@ local tier's real test is on the camera-built grid in Phase 8.
   action/priority decision
 - `MlpFusion` adapter implementing `IDecisionFusion`
 
+Done — design notes and results in
+[`docs/architecture/phase7-fusion.md`](docs/architecture/phase7-fusion.md), the scenario
+in [ADR 0003](docs/adr/0003-egocentric-scene-evidence-and-map-lag.md). Fusion is judged
+where it has work to do: the command center's map lags the world by 3 s, and the
+vehicle's own camera sees what the map does not.
+
 ### Phase 8 — End-to-End Autonomous Integration
 
 - Composition root wires all five adapters into `MissionController`, replacing the
@@ -915,12 +925,28 @@ local tier's real test is on the camera-built grid in Phase 8.
 - Profiling against target hardware (RTX laptop GPU, 16GB RAM) — trim batch sizes /
   resolution as needed
 
+Done as `run_simulation.py --full`: `FusedLocalController` puts DQN, LSTM, onboard
+camera (degrader -> autoencoder -> YOLOv8n) and fusion behind the one `ILocalController`
+port, so neither the engine nor `MissionController` changed. Runs live on an RTX 4060
+laptop GPU.
+
 ### Phase 9 — Dashboard, Testing, Documentation & Deployment
 
 - Streamlit dashboard: live/replay mission viewer, statistics, model registry view
 - Full test pyramid, coverage target enforced in CI
 - Packaging + deployment pipeline (see §15)
 - Final docs, ADRs, demo script
+
+Built instead of a Streamlit dashboard: an in-window **mission-control strip** (live
+Q-values, LSTM behaviour, camera evidence, fusion decision, override and collision
+counts) with **ablation keys** that switch each model off mid-mission — it shows *why*
+each model matters, offline, in the same window. Also added: an **OpenStreetMap
+importer** (`scripts/import_osm_map.py`, real streets as a disaster city), an
+**isometric 3D view** (`V`), **satellite imagery** under imported maps (`S`,
+`scripts/fetch_satellite.py`), **real street photos** from Mapillary beside mission control
+(`P`, `scripts/fetch_street_photos.py`), and **`scripts/demo.py`**, the review running
+order. All imagery is display only; the models see the simulated city. Not done: CI and
+packaging.
 
 ### Phase 10 — Future Improvements (see §18)
 
@@ -953,10 +979,14 @@ local tier's real test is on the camera-built grid in Phase 8.
       follower's rescues on the same held-out missions; reached 104% (149 vs 143 of 40
       missions), parity under a harsher disaster. See
       [phase6-reinforcement.md](docs/architecture/phase6-reinforcement.md).)*
-- [ ] **M7 — Decides**: MLP fusion outperforms any single upstream signal on a fused
-      decision-quality metric. *(Phase 7)*
-- [ ] **M8 — Fully Autonomous**: a complete mission (spawn → rescue all reachable
-      victims → return to safe zone) runs with zero human input. *(Phase 8)*
+- [x] **M7 — Decides**: MLP fusion outperforms any single upstream signal on a fused
+      decision-quality metric. *(Phase 7 — on held-out ticks fusion catches 89.5% of the
+      stale-map DQN's mistakes while changing 1.4% of its correct choices; no single signal
+      does both. On 40 whole missions it removes 87% of the lag-caused collisions. See
+      [phase7-fusion.md](docs/architecture/phase7-fusion.md).)*
+- [x] **M8 — Fully Autonomous**: a complete mission (spawn → rescue all reachable
+      victims → return to safe zone) runs with zero human input. *(Phase 8 —
+      `run_simulation.py --full`, all five models live.)*
 - [ ] **M9 — Shippable**: dashboard, docs, and deployment pipeline complete; project
       demoable end-to-end from a clean checkout. *(Phase 9)*
 

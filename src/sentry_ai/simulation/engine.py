@@ -21,9 +21,9 @@ from sentry_ai.common.logging_config import get_logger
 from sentry_ai.config.schema import SimulationConfig, VehicleConfig
 from sentry_ai.domain.entities import Position, Vehicle
 from sentry_ai.domain.map import CityMap
-from sentry_ai.domain.occupancy import OccupancyCode
+from sentry_ai.domain.occupancy import OccupancyCode, OccupancyGrid
 from sentry_ai.interfaces.navigation import ILocalController, LocalDecision, LocalObservation
-from sentry_ai.interfaces.world import IWorldProcess, WorldChange
+from sentry_ai.interfaces.world import IOccupancyGridSource, IWorldProcess, WorldChange
 from sentry_ai.simulation.events import EventKind
 from sentry_ai.simulation.mission import MissionController, MissionPhase, MissionStats
 from sentry_ai.simulation.vehicle_controller import MoveOutcome, VehicleController
@@ -63,6 +63,7 @@ class SimulationEngine:
         simulation_config: SimulationConfig,
         vehicle_config: VehicleConfig,
         world_processes: Sequence[IWorldProcess] = (),
+        physics_source: IOccupancyGridSource | None = None,
     ) -> None:
         """Wire the engine to a world, a mission, and a driver.
 
@@ -76,6 +77,11 @@ class SimulationEngine:
             world_processes: Hazards that evolve the city on their own,
                 driven in the order given. Defaults to none, which is a
                 completely static city.
+            physics_source: What the vehicle physically collides with and
+                burns in. Defaults to ``None``: the command center's belief
+                map, which is exact while that map is ground truth. Pass a
+                ground-truth source when the belief can lag or err (Phase 7)
+                — debris the map has not heard of must still stop a vehicle.
         """
         self._city_map = city_map
         self._mission = mission
@@ -84,6 +90,7 @@ class SimulationEngine:
         self._vehicle_config = vehicle_config
         self._vehicle_controller = VehicleController(vehicle_config)
         self._world_processes = tuple(world_processes)
+        self._physics_source = physics_source
         self._tick_index = 0
 
         city_map.vehicle.battery_percent = vehicle_config.battery.initial_percent
@@ -122,7 +129,7 @@ class SimulationEngine:
         vehicle = self._city_map.vehicle
         world_change = self._advance_world(vehicle)
         decision = self._controller.decide(self.observe())
-        outcome = self._vehicle_controller.apply(vehicle, decision.action, self._mission.grid)
+        outcome = self._vehicle_controller.apply(vehicle, decision.action, self.physics_grid())
 
         if outcome.collided:
             self._mission.stats.collisions += 1
@@ -162,6 +169,16 @@ class SimulationEngine:
             self._mission.note_world_change(change.changed_tiles)
         return change
 
+    def physics_grid(self) -> OccupancyGrid:
+        """The grid the vehicle's physics acts on right now.
+
+        The belief map unless a ``physics_source`` was injected; see
+        :meth:`__init__`.
+        """
+        if self._physics_source is None:
+            return self._mission.grid
+        return self._physics_source.grid_for(self._city_map, self._city_map.vehicle.position)
+
     def run(self, max_ticks: int) -> MissionStats:
         """Tick until the mission ends or ``max_ticks`` is reached.
 
@@ -174,20 +191,27 @@ class SimulationEngine:
                 break
         return self._mission.stats
 
-    def observe(self) -> LocalObservation:
+    def observe(self, grid: OccupancyGrid | None = None) -> LocalObservation:
         """The local controller's view of this instant.
 
         Public so the Phase 6 RL environment can show the agent the state
         it is about to act in, before the tick that acts. Built fresh on
         every call from the live mission, so it is never stale.
+
+        Args:
+            grid: The map to read hazards from. Defaults to the command
+                center's belief — what the controller really sees. Phase 7
+                passes :meth:`physics_grid` to ask what the controller
+                *would* see if the belief were current.
         """
+        grid = grid if grid is not None else self._mission.grid
         vehicle = self._city_map.vehicle
         waypoint = self._mission.next_waypoint()
         dx, dy = vehicle.heading.delta
         ahead_x, ahead_y = vehicle.position.x + dx, vehicle.position.y + dy
         blocked = ahead_x < 0 or ahead_y < 0
         if not blocked:
-            blocked = not self._mission.grid.is_traversable(Position(ahead_x, ahead_y))
+            blocked = not grid.is_traversable(Position(ahead_x, ahead_y))
 
         return LocalObservation(
             position=vehicle.position,
@@ -195,17 +219,17 @@ class SimulationEngine:
             battery_percent=vehicle.battery_percent,
             next_waypoint=waypoint,
             blocked_ahead=blocked,
-            fire_proximity=self._fire_proximity(vehicle.position),
+            fire_proximity=self._fire_proximity(vehicle.position, grid),
         )
 
-    def _fire_proximity(self, position: Position) -> float:
+    def _fire_proximity(self, position: Position, grid: OccupancyGrid) -> float:
         """Closeness to the nearest fire the vehicle can sense, 0-1.
 
         ``1.0`` means standing in it, ``0.0`` means nothing within
         ``vehicle.sensor_range_tiles``.
         """
         sensor_range = self._vehicle_config.sensor_range_tiles
-        fires = self._mission.grid.positions_with(OccupancyCode.FIRE)
+        fires = grid.positions_with(OccupancyCode.FIRE)
         if not fires:
             return 0.0
         nearest = min(position.distance_to(fire) for fire in fires)

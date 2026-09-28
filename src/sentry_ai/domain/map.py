@@ -14,6 +14,7 @@ from typing import Any
 from sentry_ai.common.exceptions import DomainValidationError
 from sentry_ai.domain.entities import FireSource, Obstacle, Position, SafeZone, Vehicle, Victim
 from sentry_ai.domain.enums import TerrainType
+from sentry_ai.domain.traffic import TrafficAgent
 
 #: Any entity that can occupy a tile and be queried by proximity.
 MapEntity = Victim | FireSource | Obstacle | Vehicle
@@ -44,6 +45,45 @@ _OBSTACLE_TERRAIN_TYPES = frozenset(
 )
 
 
+class TerrainLayer(dict[Position, TerrainType]):
+    """The city's terrain dict, counting its own changes.
+
+    A plain ``dict`` in every way that matters to callers; the only addition
+    is :attr:`version`, bumped on every write. Anything expensive derived from
+    the layout — the occupancy grid's terrain layer, 40,000 tiles on a
+    city-sized map — can then be cached until the city actually changes
+    (a building collapses) instead of being rebuilt every tick.
+    """
+
+    version: int = 0
+    #: ``(version, cells)`` of the occupancy terrain layer last derived from
+    #: this layout; owned by :meth:`OccupancyGrid.terrain_only`.
+    occupancy_cache: tuple[int, Any] | None = None
+
+    def __setitem__(self, key: Position, value: TerrainType) -> None:
+        super().__setitem__(key, value)
+        self.version += 1
+
+    def __delitem__(self, key: Position) -> None:
+        super().__delitem__(key)
+        self.version += 1
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        """``dict.update``, counted as one change."""
+        super().update(*args, **kwargs)
+        self.version += 1
+
+    def pop(self, *args: Any) -> Any:
+        """``dict.pop``, counted as a change."""
+        self.version += 1
+        return super().pop(*args)
+
+    def clear(self) -> None:
+        """``dict.clear``, counted as a change."""
+        super().clear()
+        self.version += 1
+
+
 @dataclass
 class CityMap:
     """The disaster city: its tile grid plus every entity placed on it."""
@@ -57,8 +97,13 @@ class CityMap:
     fires: list[FireSource] = field(default_factory=list)
     obstacles: list[Obstacle] = field(default_factory=list)
     default_terrain: TerrainType = TerrainType.OPEN_GROUND
+    #: Cars and pedestrians sharing the streets; filled by the traffic
+    #: process when a config enables it, empty otherwise.
+    traffic: list[TrafficAgent] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.terrain, TerrainLayer):
+            self.terrain = TerrainLayer(self.terrain)
         self.validate()
 
     # ------------------------------------------------------------------

@@ -1,0 +1,22 @@
+# A city-sized mission: 4 km x 4 km of real Chicago (the West Side, around
+# Humboldt Park and Ukrainian Village), imported from OpenStreetMap by
+# scripts/import_osm_map.py. Chicago's street grid runs exactly north-south,
+# so the vehicle drives long straight streets instead of staircases. The
+# window opens in the drive view (F), which follows the vehicle the way a
+# car's autopilot display does.
+#   python scripts/run_simulation.py --config configs/app_city.yaml --full --speed 0.5
+# Paths below are relative to the project root.
+
+logging_config: "configs/logging.yaml"
+map_config: "configs/maps/osm_chicago.yaml"
+
+simulation_config: "configs/simulation_city.yaml"
+vehicle_config: "configs/vehicle_city.yaml"
+
+sensor_config: "configs/sensors.yaml"
+
+render:
+  window_title: "SENTRY AI — Chicago"
+  tile_size_px: 28
+  target_fps: 60
+  palette_config: "configs/render.yaml"

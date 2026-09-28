@@ -59,6 +59,7 @@ def build_mission(
     controller: ILocalController | None = None,
     hazard_seed: int | None = None,
     grid_source: IOccupancyGridSource | None = None,
+    physics_source: IOccupancyGridSource | None = None,
 ) -> Mission:
     """Compose a mission over ``city_map``.
 
@@ -82,6 +83,8 @@ def build_mission(
             — perfect perception, the Phase 2 behaviour. Pass
             :class:`~sentry_ai.perception.grid_source.DetectedGridSource`
             to run the mission on what the cameras actually see.
+        physics_source: What the vehicle collides with. Defaults to the
+            belief map; see :class:`SimulationEngine`.
 
     Returns:
         An unstarted :class:`Mission`.
@@ -108,5 +111,6 @@ def build_mission(
         simulation_config=simulation_config,
         vehicle_config=vehicle_config,
         world_processes=build_world_processes(hazards),
+        physics_source=physics_source,
     )
     return Mission(city_map=city_map, engine=engine)

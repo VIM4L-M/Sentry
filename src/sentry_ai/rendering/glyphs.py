@@ -165,10 +165,20 @@ def draw_vehicle(
     The shape carries the heading, so the separate heading stub the old
     renderer drew is no longer needed — one glyph, one fact.
     """
+    draw_vehicle_facing(surface, rect, color, _heading_radians(heading))
+
+
+def draw_vehicle_facing(
+    surface: pygame.Surface, rect: pygame.Rect, color: Color, radians: float
+) -> None:
+    """The vehicle chevron turned ``radians`` clockwise from north.
+
+    For a vehicle drawn mid-turn, between the four headings.
+    """
     points = [
         (rect.left + fx * rect.width, rect.top + fy * rect.height) for fx, fy in _CHEVRON_POINTS
     ]
-    rotated = [_rotate_about(point, rect.center, _heading_radians(heading)) for point in points]
+    rotated = [_rotate_about(point, rect.center, radians) for point in points]
     pygame.draw.polygon(surface, color.as_tuple(), rotated)
     pygame.draw.polygon(surface, _shade(color, 0.6).as_tuple(), rotated, width=1)
 

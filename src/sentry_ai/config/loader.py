@@ -24,6 +24,7 @@ from sentry_ai.config.schema import (
     DegradationConfig,
     DqnTrainingConfig,
     FireSpreadConfig,
+    FusionTrainingConfig,
     HazardConfig,
     LstmTrainingConfig,
     MarkerScaleConfig,
@@ -34,6 +35,7 @@ from sentry_ai.config.schema import (
     RewardConfig,
     SensorConfig,
     SimulationConfig,
+    TrafficConfig,
     VehicleConfig,
     VictimRiskConfig,
     YoloTrainingConfig,
@@ -352,6 +354,51 @@ class ConfigLoader:
             ),
         )
 
+    def load_fusion_config(self, relative_path: PathLike) -> FusionTrainingConfig:
+        """Load ``configs/training/fusion.yaml`` into a :class:`FusionTrainingConfig`.
+
+        Same optional-key policy and path resolution as every other config.
+
+        Raises:
+            AssetNotFoundError: If the file does not exist.
+            ConfigurationError: If a value has the wrong type.
+            ConfigValidationError: If a value is out of range.
+        """
+        data = self.load_yaml(relative_path)
+        d = FusionTrainingConfig()
+
+        def path(key: str, default: Path) -> Path:
+            return self.resolve(str(data.get(key, default)))
+
+        return FusionTrainingConfig(
+            dataset_dir=path("dataset_dir", d.dataset_dir),
+            runs_dir=path("runs_dir", d.runs_dir),
+            dqn_weights=path("dqn_weights", d.dqn_weights),
+            lstm_weights=path("lstm_weights", d.lstm_weights),
+            belief_lag=_as_int(data, "belief_lag", d.belief_lag),
+            train_missions=_as_int(data, "train_missions", d.train_missions),
+            val_missions=_as_int(data, "val_missions", d.val_missions),
+            eval_missions=_as_int(data, "eval_missions", d.eval_missions),
+            seed_base=_as_int(data, "seed_base", d.seed_base),
+            oracle_drive_probability=_as_float(
+                data, "oracle_drive_probability", d.oracle_drive_probability
+            ),
+            max_ticks=_as_int(data, "max_ticks", d.max_ticks),
+            hidden_sizes=_as_int_tuple(data, "hidden_sizes", d.hidden_sizes),
+            dropout=_as_float(data, "dropout", d.dropout),
+            epochs=_as_int(data, "epochs", d.epochs),
+            batch_size=_as_int(data, "batch_size", d.batch_size),
+            learning_rate=_as_float(data, "learning_rate", d.learning_rate),
+            weight_decay=_as_float(data, "weight_decay", d.weight_decay),
+            patience=_as_int(data, "patience", d.patience),
+            critical_weight=_as_float(data, "critical_weight", d.critical_weight),
+            override_threshold=_as_float(data, "override_threshold", d.override_threshold),
+            report_hazards=_as_bool(data, "report_hazards", d.report_hazards),
+            report_threshold=_as_float(data, "report_threshold", d.report_threshold),
+            device=str(data.get("device", d.device)),
+            seed=_as_int(data, "seed", d.seed),
+        )
+
     def load_simulation_config(self, relative_path: PathLike) -> SimulationConfig:
         """Load ``simulation.yaml`` into a :class:`SimulationConfig`.
 
@@ -395,6 +442,9 @@ class ConfigLoader:
             mission=mission,
             planner=planner,
             hazards=_hazard_config(_require_mapping(data.get("hazards", {}), "simulation.hazards")),
+            traffic=_traffic_config(
+                _require_mapping(data.get("traffic", {}), "simulation.traffic")
+            ),
         )
 
     def load_vehicle_config(self, relative_path: PathLike) -> VehicleConfig:
@@ -517,6 +567,20 @@ def _hazard_config(data: dict[str, Any]) -> HazardConfig:
     )
 
 
+def _traffic_config(data: dict[str, Any]) -> TrafficConfig:
+    """Build the traffic config from the ``traffic`` section of ``simulation.yaml``."""
+    d = TrafficConfig
+    return TrafficConfig(
+        enabled=_as_bool(data, "enabled", d.enabled),
+        cars=_as_int(data, "cars", d.cars),
+        pedestrians=_as_int(data, "pedestrians", d.pedestrians),
+        car_step_ticks=_as_int(data, "car_step_ticks", d.car_step_ticks),
+        pedestrian_step_ticks=_as_int(data, "pedestrian_step_ticks", d.pedestrian_step_ticks),
+        crossing_chance=_as_float(data, "crossing_chance", d.crossing_chance),
+        seed=_as_int(data, "seed", d.seed),
+    )
+
+
 def _require_mapping(value: Any, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ConfigurationError(f"config section '{label}' must be a mapping, got {type(value)}")
@@ -545,3 +609,13 @@ def _as_bool(data: dict[str, Any], key: str, default: bool) -> bool:
     if not isinstance(value, bool):
         raise ConfigurationError(f"config key '{key}' must be true or false, got {value!r}")
     return value
+
+
+def _as_int_tuple(data: dict[str, Any], key: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    """Read ``data[key]`` as a list of ints, falling back to ``default`` when absent."""
+    value = data.get(key, list(default))
+    if not isinstance(value, list) or not all(
+        isinstance(item, int) and not isinstance(item, bool) for item in value
+    ):
+        raise ConfigurationError(f"config key '{key}' must be a list of ints, got {value!r}")
+    return tuple(value)

@@ -1,0 +1,65 @@
+# Decision-fusion MLP for Unit I (Deep Learning Fundamentals).
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_fusion_config().
+# Every key is optional — an omitted key uses the dataclass default in
+# sentry_ai.config.schema.FusionTrainingConfig.
+
+dataset_dir: "data/fusion"
+runs_dir: "models/fusion"
+
+# The two models fusion listens to. Fusion arbitrates *these* decisions, so
+# retrain it whenever either of them is retrained.
+dqn_weights: "models/dqn/sentry/best.zip"
+lstm_weights: "models/lstm/sentry/best.pt"
+
+# The scenario. The command center's map trails the world by this many
+# refreshes (about one per tick; 10 ticks = 1 simulated second). With no lag
+# the A* planner routes around every hazard and there is nothing to fuse; at
+# 30, a DQN driving on the stale map collided 44 times over 20 missions where
+# it collided 0 times on a fresh one (docs/architecture/phase7-fusion.md).
+belief_lag: 30
+
+# Missions, split by mission like every other dataset in this project.
+# Seeds start clear of the DQN's own range (3000-3439).
+train_missions: 120
+val_missions: 30
+eval_missions: 40
+seed_base: 5000
+
+# Share of collection ticks driven by the ground-truth decision rather than
+# the DQN's, so the data also covers what happens after a correction.
+oracle_drive_probability: 0.3
+max_ticks: 3000
+
+# Architecture — Linear -> ReLU -> Dropout per hidden layer.
+hidden_sizes: [64, 32]
+dropout: 0.2
+
+# Optimisation (Adam).
+epochs: 60
+batch_size: 256
+learning_rate: 0.001
+weight_decay: 0.0001
+patience: 10           # stop early if validation weighted accuracy stops improving
+
+# Ticks where the stale-map DQN disagrees with the ground truth are about 2%
+# of the data and the whole point of fusion; weight them up. Swept 1/2/3/5:
+# 5 catches most mistakes (88%) but overrides the DQN wrongly most often;
+# 2 keeps 82% caught with the fewest false overrides.
+critical_weight: 2.0
+
+# At inference fusion may overrule the DQN only when this sure of its own
+# choice. Measured on whole missions: taking every argmax overrode the DQN
+# 814 times in 40 missions, and the unsure overrides sent the vehicle off
+# its route often enough to cost rescues.
+override_threshold: 0.8
+
+# When fusion overrides, also report what the camera saw ahead to the command
+# center's map, which then replans around it. Measured on 40 held-out missions
+# (docs/architecture/phase7-fusion.md): it cut collisions from 8 to 1 but
+# completed 25/40 missions instead of 37/40, because YOLO's reports block
+# streets that are open. Off by default; the whole-mission evaluation runs both.
+report_hazards: false
+report_threshold: 0.5
+
+device: "auto"
+seed: 20250810
