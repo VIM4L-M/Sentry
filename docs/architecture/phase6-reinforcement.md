@@ -160,8 +160,12 @@ Phase 8's end-to-end runs.
 ## Still open
 
 * **Train and evaluate on the perceived grid.** The DQN has only ever seen
-  a perfect map. Phase 8 runs it on `DetectedGridSource`, where the map is
-  wrong and collisions become possible — the real test of the local tier.
+  a perfect map. Phase 7 measured what that costs: with the command
+  center's map three seconds behind reality (and the vehicle now moving
+  through the real city, ADR 0003) the DQN collides 150 times in 40
+  missions. Decision fusion with the onboard camera brings that to 13 —
+  see [phase7-fusion.md](phase7-fusion.md). Training the DQN itself on a
+  lagging or perceived map is still open.
 * **The observation has no side view.** `LocalObservation` reports only the
   tile ahead. Swerving around an unexpected obstacle needs to know whether
   left and right are clear; adding that is a change to a port's value type,

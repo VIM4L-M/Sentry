@@ -105,6 +105,7 @@ class MissionController:
     _route_index: int = field(default=0, init=False)
     _abandoned: set[str] = field(default_factory=set, init=False)
     _mourned: set[str] = field(default_factory=set, init=False)
+    _blocked_streak: int = field(default=0, init=False)
 
     @property
     def phase(self) -> MissionPhase:
@@ -202,6 +203,7 @@ class MissionController:
         self.stats.ticks += 1
         self.stats.elapsed_seconds += delta_seconds
         self.refresh_grid(vehicle)
+        self._drop_route_if_blocked(vehicle.position)
         self._record_losses()
         self._advance_route(vehicle)
         self._handle_arrivals(vehicle)
@@ -223,6 +225,41 @@ class MissionController:
         triage, the failure rules — knows or asks.
         """
         self.grid = self.grid_source.grid_for(self.city_map, vehicle.position)
+
+    def _drop_route_if_blocked(self, vehicle_position: Position) -> None:
+        """Replan when the freshest map shows the route ahead is no longer passable.
+
+        With a perfect, instant map this never fires: a hazard invalidates an
+        affected route the moment it happens, and a new route is planned on a
+        map that already shows the change. It matters when the map *lags* —
+        ``LaggedGridSource``, or perception that sees late. Then the route
+        planned just after a collapse can run straight through it, and until
+        Phase 7 the only thing that ever corrected it was the vehicle crashing
+        into the rubble. With decision fusion vetoing that crash, nothing would
+        have: the vehicle would wait at the debris forever. Re-checking the
+        unvisited route against every refreshed map is what a command center
+        does anyway.
+
+        The tile the vehicle stands on is skipped, as the planner skips its
+        own start tile: on a perceived map a fire can outrank the vehicle's
+        marker, and a route must not be declared blocked by the ground the
+        vehicle is already on — that replanned the same route every tick.
+
+        Debounced: the route must read as blocked on
+        ``config.block_confirm_refreshes`` consecutive refreshes. A detector
+        flickers; a collapse persists. Reacting to a single frame let a
+        one-tick phantom obstacle beside a victim get them abandoned.
+        """
+        remaining = self._route.waypoints[self._route_index :]
+        blocked = any(
+            waypoint != vehicle_position and not self.grid.is_traversable(waypoint)
+            for waypoint in remaining
+        )
+        self._blocked_streak = self._blocked_streak + 1 if blocked else 0
+        if self._blocked_streak >= self.config.block_confirm_refreshes:
+            self._blocked_streak = 0
+            self.invalidate_route()
+            self.record(EventKind.ROUTE, "route blocked on the latest map — replanning")
 
     def _advance_route(self, vehicle: Vehicle) -> None:
         """Consume waypoints the vehicle has already reached."""

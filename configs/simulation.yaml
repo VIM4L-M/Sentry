@@ -20,6 +20,10 @@ mission:
   # always takes the cheapest victim to reach and large values will cross
   # the city for someone critical.
   urgency_weight: 14.0
+  # Consecutive map refreshes the route ahead must read as blocked before the
+  # command center drops it. A detector flickers; a collapse persists. At 1, a
+  # single-frame phantom beside a victim got them abandoned (Phase 8).
+  block_confirm_refreshes: 3
 
 planner:
   # Extra A* cost for a tile near a known fire. Raise to make the planner

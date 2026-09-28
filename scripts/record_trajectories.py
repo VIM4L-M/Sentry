@@ -26,6 +26,8 @@ Usage:
     python scripts/record_trajectories.py
     python scripts/record_trajectories.py --train-missions 300 --val-missions 80
     python scripts/record_trajectories.py --fixed-start --output data/trajectories_fixed
+    python scripts/record_trajectories.py --dqn models/dqn/sentry/best.zip \
+        --output data/trajectories_dqn
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from pathlib import Path
 from sentry_ai.common.logging_config import get_logger, setup_logging
 from sentry_ai.config.loader import ConfigLoader
 from sentry_ai.domain.map import CityMap
+from sentry_ai.interfaces.navigation import ILocalController
 from sentry_ai.training.missions import MissionFactory
 from sentry_ai.training.trajectories import TrajectoryRecorder, TrajectorySet
 
@@ -61,7 +64,10 @@ def main() -> int:
     factory = MissionFactory.from_app_config(
         loader, app_config, randomise_start=not args.fixed_start
     )
-    recorder = TrajectoryRecorder(factory.build, max_ticks=args.max_ticks)
+    driver = _driver(loader, args.dqn)
+    recorder = TrajectoryRecorder(
+        lambda seed: factory.build(seed, driver), max_ticks=args.max_ticks
+    )
     output = loader.resolve(args.output)
 
     first_val = args.seed_base + args.train_missions
@@ -75,6 +81,22 @@ def main() -> int:
         trajectories.save(output / f"{split}.json")
         _report(split, trajectories)
     return 0
+
+
+def _driver(loader: ConfigLoader, dqn: str | None) -> ILocalController | None:
+    """Who drives while trajectories are recorded.
+
+    The LSTM learns how *this* driver behaves, so it must be trained on the
+    driver it will be asked about. ``None`` is the waypoint follower; Phase 7
+    records with the DQN, which reverses and pre-turns where the follower
+    does not.
+    """
+    if dqn is None:
+        return None
+
+    from sentry_ai.decision.dqn_controller import DqnLocalController  # noqa: PLC0415
+
+    return DqnLocalController.from_file(loader.resolve(dqn))
 
 
 def _report(split: str, trajectories: TrajectorySet) -> None:
@@ -110,6 +132,10 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--max-ticks", type=int, default=5000, help="Tick budget per mission (default: 5000)."
+    )
+    parser.add_argument(
+        "--dqn",
+        help="Record with a trained DQN driving (default: the waypoint follower).",
     )
     parser.add_argument(
         "--fixed-start",

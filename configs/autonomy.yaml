@@ -1,0 +1,42 @@
+# Phase 8: every trained model wired into one autonomous mission.
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_autonomy_config().
+# Every key is optional — an omitted key uses the dataclass default in
+# sentry_ai.config.schema. Paths are relative to the project root.
+
+# The trained file for every slot of the stack.
+models:
+  cctv_detector: "models/yolo/denoised/weights/best.pt"   # trained on denoised frames (Phase 4)
+  denoiser: "models/autoencoder/sentry/best.pt"           # null = no denoiser
+  onboard_detector: "models/yolo/labelfix/weights/best.pt" # what fusion was trained against
+  dqn: "models/dqn/sentry/best.zip"
+  lstm: "models/lstm/dqn/best.pt"                         # retrained on the DQN's driving
+  fusion: "models/fusion/sentry/fusion/best.pt"
+
+# "auto" picks CUDA when Torch reports it.
+device: "auto"
+
+# Re-perceive the CCTV map every N refreshes. 1 = every tick (a GPU keeps up
+# easily). On a CPU, 4 cuts the dominant cost — four frames through the
+# denoiser — by four, while keeping the map at most 0.4 s old against hazards
+# that change every 3 s. The onboard camera is never throttled.
+perception_every: 1
+
+# Extra lag on the command center's map, in refreshes. 0 = the camera-built
+# map as it is; 30 reproduces Phase 7's three-second communications lag.
+belief_lag: 0
+
+confidence: 0.25
+image_size: 256          # must match the detectors' training resolution
+seed: 0                  # seeds the frame degraders: missions replay identically
+
+# One JSON record per mission — outcome, per-stage timing, the vehicle's
+# path, the event log. Phase 9's dashboard reads these.
+missions_dir: "runs/missions"
+
+# Milestone M8, over held-out missions with random starts: the full stack
+# must complete this share of missions, and rescue at least this share of
+# what the ground-truth waypoint follower rescues on the same missions.
+eval_missions: 20
+eval_seed_base: 7000
+completion_threshold: 0.9
+rescue_threshold: 0.9

@@ -13,8 +13,10 @@ whose output builds the occupancy grid the planner reasons over — the vehicle
 can complete a rescue on what it *sees* rather than on ground truth. Phase 4
 (denoising autoencoder) is complete: the denoiser slots in front of the detector
 with `--denoiser`, and at double the smoke it lifts victim recall from 0.86 to 0.99
-(M4). Phase 5 (behaviour LSTM) meets M5, and Phase 6 (DQN driving policy) meets M6. See PROJECT.md §10-11 for the phase breakdown and
-milestones.
+(M4). Phase 5 (behaviour LSTM) meets M5, Phase 6 (DQN driving policy) meets M6, and Phase 7
+(decision fusion) meets M7. Phase 8 wires every trained model into one stack that
+completes missions with no human input and no ground truth (M8). See PROJECT.md
+§10-11 for the phase breakdown and milestones.
 
 ## Quick Start
 
@@ -322,6 +324,60 @@ with a perfect map the planner absorbs every surprise, so the learned driver's r
 test is on the camera-built map in Phase 8. Details in
 [`docs/architecture/phase6-reinforcement.md`](docs/architecture/phase6-reinforcement.md).
 
+## Phase 7 — Decision Fusion (Unit I)
+
+```bash
+python scripts/record_trajectories.py --dqn models/dqn/sentry/best.zip --output data/trajectories_dqn
+python scripts/train_lstm.py --trajectories data/trajectories_dqn --name dqn
+python scripts/train_fusion.py --record     # ~15 min: record 200 missions, train 4 models
+python scripts/evaluate_fusion.py           # ~6 min: 40 new missions, 4 drivers
+```
+
+A PyTorch MLP (Adam, ReLU, Dropout) fuses the DQN's Q-values, the LSTM's behaviour
+prediction and **the vehicle's own camera** into the action it takes. Its job is
+concrete: the command center's map lags reality by three seconds, so the DQN drives
+into debris that fell after the map was made — and the onboard camera can see it.
+
+| 40 new missions, 3 s map lag | rescued | lost | collisions | vehicle damage |
+|---|---|---|---|---|
+| DQN alone | 143 | 13 | 150 | 20.1% |
+| DQN + hand-written camera-veto rule | **101** | **39** | 0 | 10.4% |
+| **DQN + MLP fusion** | **143** | **13** | **13** | **2.9%** |
+
+Fusion avoids 91% of the crashes at no cost to the mission. The obvious rule avoids
+all of them and rescues 42 fewer people: whenever the detector wrongly sees debris on
+a clear road, it stops and never starts again. Per decision, M7 is met — macro-F1
+0.993 against 0.955 for the best single signal.
+
+This phase also corrected two things (ADR 0003): the vehicle now moves through the
+*real* city — before, a map that missed debris let it drive straight through — and
+the command center re-checks its route against every fresh map. Details in
+[`docs/architecture/phase7-fusion.md`](docs/architecture/phase7-fusion.md).
+
+## Phase 8 — The Full Stack, End to End
+
+```bash
+python scripts/run_autonomous.py              # the window; TAB for manual override
+python scripts/run_autonomous.py --headless   # one mission, then where the time went
+python scripts/evaluate_autonomy.py           # M8: 20 new missions vs a reference
+```
+
+Every trained model drives one mission together, with no ground truth in the loop:
+the command center plans on the map its CCTV cameras build (denoised, then detected
+in one batch), and the vehicle acts on DQN + LSTM + its own camera through the fusion
+MLP. Which models load, and how often the city is re-perceived, is set in
+`configs/autonomy.yaml`. Every mission is saved as JSON under `runs/missions/`.
+
+| 20 new missions (CPU) | rescued | lost | collisions | completed |
+|---|---|---|---|---|
+| **full stack, camera-built map** | **72** | **2** | **0** | **100%** |
+| reference, ground-truth map | 77 | 1 | 0 | 100% |
+
+M8 is met: 100% of missions completed, 94% of the reference's rescues. On CPU a tick
+costs 413 ms, 345 of it the denoiser. Details, including a one-frame phantom obstacle
+that cost a victim and the fix, in
+[`docs/architecture/phase8-integration.md`](docs/architecture/phase8-integration.md).
+
 ## Project Layout
 
 ```
@@ -337,7 +393,8 @@ src/sentry_ai/
   simulation/  Tick engine, mission state machine, vehicle physics, hazards
   sensors/     Synthetic cameras: rasterizer, ground-truth labels, frame degradation
   sequence/    Behaviour classes and the LSTM motion predictor
-  decision/    The DQN local controller (Phase 6); fusion comes in Phase 7
+  decision/    DQN local controller (Phase 6), MLP fusion and the fused controller (Phase 7)
+  autonomy/    The full stack wired and timed, mission records (Phase 8)
   training/    Offline only: dataset builder, YOLO + autoencoder + LSTM training,
                trajectory recording, seeding, metric logs, checkpoints
   rendering/   Pygame map renderer, HUD, keyboard input, mission window
@@ -383,7 +440,10 @@ built, owned by later phases).
   [Phase 3 — detection](docs/architecture/phase3-detection.md),
   [Phase 4 — denoising](docs/architecture/phase4-denoising.md),
   [Phase 5 — sequence](docs/architecture/phase5-sequence.md),
-  [Phase 6 — reinforcement](docs/architecture/phase6-reinforcement.md))
+  [Phase 6 — reinforcement](docs/architecture/phase6-reinforcement.md),
+  [Phase 7 — fusion](docs/architecture/phase7-fusion.md),
+  [Phase 8 — integration](docs/architecture/phase8-integration.md))
 - [`docs/adr/`](docs/adr/) — Architecture Decision Records
   ([0001 config](docs/adr/0001-config-driven-yaml-dataclasses.md),
-  [0002 two-tier navigation](docs/adr/0002-two-tier-navigation-and-command-center.md))
+  [0002 two-tier navigation](docs/adr/0002-two-tier-navigation-and-command-center.md),
+  [0003 fusion and the real world](docs/adr/0003-fusion-sees-the-observation-and-the-world.md))

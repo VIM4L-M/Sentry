@@ -406,6 +406,15 @@ def _tensors(
     return torch.from_numpy(features), torch.from_numpy(labels)
 
 
+def sqrt_inverse_frequency_weights(labels: torch.Tensor, classes: int) -> torch.Tensor:
+    """Square-root inverse-frequency class weights; see :func:`_class_weights`."""
+    counts = torch.bincount(labels, minlength=classes).float()
+    present = counts > 0
+    weights = torch.zeros_like(counts)
+    weights[present] = torch.sqrt(counts.sum() / (present.sum() * counts[present]))
+    return weights
+
+
 def _class_weights(labels: torch.Tensor) -> torch.Tensor:
     """Square-root inverse-frequency weights: rare classes count for more, not for everything.
 
@@ -420,11 +429,7 @@ def _class_weights(labels: torch.Tensor) -> torch.Tensor:
     A class absent from training gets weight zero — there is nothing to
     weight, and an infinite weight would be a NaN waiting to happen.
     """
-    counts = torch.bincount(labels, minlength=len(BEHAVIOUR_ORDER)).float()
-    present = counts > 0
-    weights = torch.zeros_like(counts)
-    weights[present] = torch.sqrt(counts.sum() / (present.sum() * counts[present]))
-    return weights
+    return sqrt_inverse_frequency_weights(labels, len(BEHAVIOUR_ORDER))
 
 
 def _train_epoch(

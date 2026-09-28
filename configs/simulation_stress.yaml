@@ -27,6 +27,7 @@ mission:
   # always takes the cheapest victim to reach and large values will cross
   # the city for someone critical.
   urgency_weight: 14.0
+  block_confirm_refreshes: 3
 
 planner:
   # Extra A* cost for a tile near a known fire. Raise to make the planner

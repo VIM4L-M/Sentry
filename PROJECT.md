@@ -1,7 +1,7 @@
 # SENTRY AI — Autonomous Emergency Rescue Vehicle for Disaster Zones
 
 **Type:** Semester-long Applied Deep Learning project (simulation-based)
-**Status:** Phases 1-4 complete; Phases 5 and 6 core complete — M4, M5 and M6 met (see §10)
+**Status:** Phases 1-4 and 8 complete; Phases 5-7 core complete — M1 to M8 met (see §10)
 **Audience:** Single student developer, evaluated to production-software standards
 
 This document is the canonical architecture reference for SENTRY AI. It is intentionally
@@ -187,6 +187,7 @@ sentry/
 │   ├── sensors.yaml                # camera layout, degradation, sensor palette
 │   ├── sensors_v75.yaml            # camera experiment (bigger markers), Phase 3.1
 │   ├── render.yaml                 # window size, palette, tile size
+│   ├── autonomy.yaml               # Phase 8: which trained models drive, perception rate
 │   ├── maps/
 │   │   └── city_default.yaml       # disaster city map definition
 │   └── training/                   # per-model hyperparameters (Phase 3-7)
@@ -194,7 +195,7 @@ sentry/
 │       ├── autoencoder.yaml        # Phase 4
 │       ├── lstm.yaml
 │       ├── dqn.yaml
-│       └── mlp_fusion.yaml
+│       └── fusion.yaml             # Phase 7
 │
 ├── src/
 │   └── sentry_ai/
@@ -233,7 +234,7 @@ sentry/
 │       ├── simulation/             # Phase 2 — engine, mission, physics, hazards
 │       │   ├── engine.py
 │       │   ├── factory.py          # composes a mission; shared by every entry point
-│       │   ├── grid_source.py      # GroundTruthGridSource — the answer key
+│       │   ├── grid_source.py      # GroundTruthGridSource, LaggedGridSource, ThrottledGridSource
 │       │   ├── mission.py
 │       │   ├── hazards.py          # fire spread + debris collapse
 │       │   ├── events.py           # bounded mission event log
@@ -252,12 +253,19 @@ sentry/
 │       │   ├── grid_builder.py     # OccupancyGridBuilder — belief -> grid (3.3)
 │       │   ├── grid_metrics.py     # GridComparison — scores a belief grid (3.3)
 │       │   ├── grid_source.py      # DetectedGridSource — the camera pipeline (3.4)
-│       │   └── autoencoder.py      # ConvDenoisingAutoencoder implementing IDenoiser (4)
+│       │   ├── autoencoder.py      # ConvDenoisingAutoencoder implementing IDenoiser (4)
+│       │   └── onboard.py          # OnboardSensing: the vehicle's camera as sightings (7)
 │       ├── sequence/                # Phase 5 — LSTM adapter
 │       │   ├── behaviour.py        # what ADVANCE/RETREAT/HOLD/DIVERT mean + baseline
 │       │   └── lstm_predictor.py   # LstmMotionPredictor implementing IMotionPredictor
 │       ├── decision/                 # Phase 6/7 — DQN policy + MLP fusion adapters
-│       │   └── dqn_controller.py   # egocentric features + DqnLocalController (6)
+│       │   ├── dqn_controller.py   # egocentric features + DqnLocalController (6)
+│       │   ├── fusion.py           # MlpFusion, CameraVetoFusion, fusion features (7)
+│       │   └── fused_controller.py # DQN + LSTM + camera + fusion as one controller (7)
+│       ├── autonomy/                 # Phase 8 — the full stack, wired and timed
+│       │   ├── stack.py            # AutonomyStack: loads every model once, wires missions
+│       │   ├── profiling.py        # Profiler + Timed* wrappers around each stage
+│       │   └── record.py           # MissionRecord: one mission as JSON (for Phase 9)
 │       ├── training/                  # Phase 3-7 — training pipeline orchestration
 │       │   ├── dataset.py          # builds the YOLO dataset from seeded missions
 │       │   ├── yolo.py             # fine-tuning + per-class evaluation
@@ -269,7 +277,8 @@ sentry/
 │       │   ├── motion.py           # LSTM windows, baselines, macro-F1 report, trainer
 │       │   ├── missions.py         # MissionFactory: missions by seed, random starts
 │       │   ├── sentry_env.py       # SentryEnv: a whole mission as a Gymnasium env
-│       │   └── dqn.py              # DQN trainer + mission-level comparison (M6)
+│       │   ├── dqn.py              # DQN trainer + mission-level comparison (M6)
+│       │   └── fusion.py           # fusion recording, safe label, ablations (M7)
 │       └── app/                        # Phase 9 — Streamlit dashboard
 │
 ├── scripts/                        # composition roots / CLI entry points
@@ -289,7 +298,10 @@ sentry/
 │   ├── evaluate_lstm.py            # Phase 5: vs baselines, all and novel windows
 │   ├── train_dqn.py                # Phase 6
 │   ├── evaluate_dqn.py             # Phase 6: vs the waypoint follower (M6)
-│   ├── train_mlp_fusion.py         # Phase 7
+│   ├── train_fusion.py             # Phase 7: record, train fusion + single-signal models
+│   ├── evaluate_fusion.py          # Phase 7: crashes avoided on a lagging map
+│   ├── run_autonomous.py           # Phase 8: one mission on the full stack, with profile
+│   ├── evaluate_autonomy.py        # Phase 8: full stack vs reference over seeds (M8)
 │   └── run_app.py                  # Phase 9
 │
 ├── data/
@@ -364,7 +376,7 @@ IMotionPredictor.predict(state_history, Detection[]) ─► BehaviourSignal
 ILocalController.decide(observation) ───► LocalDecision {action, q_values}
         │       (the route it follows comes from IRoutePlanner — see below)
         ▼
-IDecisionFusion.fuse(Detection[], BehaviourSignal, LocalDecision) ─► FinalAction
+IDecisionFusion.fuse(observation, sightings, BehaviourSignal, LocalDecision) ─► FinalAction
         │
         ▼
 VehicleController.apply(FinalAction) ───► updates Vehicle, Battery, Health
@@ -405,14 +417,17 @@ MissionController.refresh_grid() ───────► belief map rebuilt imm
 MissionController.invalidate_route_if_affected(changed_tiles) ──► replan if cut
 ```
 
-**What exists today (Phases 3-5)** is that global loop,
+**What exists today (Phases 3-7)** is that global loop,
 the tick loop with a deterministic `WaypointFollower` — or, with `--dqn`, the Phase 6
 `DqnLocalController` — as `ILocalController`, the hazard processes, and the sensor rig. With `--perception`
 the command center's map is built from the cameras: frames are degraded, optionally
 denoised by the Phase 4 autoencoder, run through YOLOv8n, merged across the four
 overlapping CCTV views, and turned into the occupancy grid A\* plans over.
-`IMotionPredictor` is implemented by the Phase 5 LSTM but runs offline only — its
-consumer is Phase 7's fusion network. `IDecisionFusion` is still unfulfilled.
+The Phase 7 `FusedLocalController` runs the whole local stack in the controller slot —
+DQN, LSTM, the onboard camera and the MLP fusion — and is evaluated on missions where
+the command center's map lags reality (`LaggedGridSource`). The vehicle always moves
+through the real city; the command center plans on its belief (ADR 0003). Phase 8 wires
+all of it, with the camera-built map, into one composition root.
 
 ---
 
@@ -697,9 +712,9 @@ sequenceDiagram
 | 3 | Computer Vision — Detection | 5-6 | Unit II | ✅ **Complete** |
 | 4 | Representation Learning — Denoising AE | 7 | Unit IV | ✅ **Complete** |
 | 5 | Sequence Modeling — LSTM | 8 | Unit III | ✅ **Core complete** — consumed from Phase 7 |
-| 6 | Reinforcement Learning — DQN | 9-11 | Unit V | ✅ **Core complete** — perceived-grid test in Phase 8 |
-| 7 | Decision Fusion — MLP | 12 | Unit I | ⏳ Not started |
-| 8 | End-to-End Autonomous Integration | 13 | All | ⏳ Not started |
+| 6 | Reinforcement Learning — DQN | 9-11 | Unit V | ✅ **Core complete** — drives on the perceived grid in Phase 8 |
+| 7 | Decision Fusion — MLP | 12 | Unit I | ✅ **Core complete** |
+| 8 | End-to-End Autonomous Integration | 13 | All | ✅ **Complete** |
 | 9 | Dashboard, Testing, Docs, Deployment | 14-15 | — | ⏳ Not started |
 | 10 | Stretch / Future Improvements | post-semester | — | ⏳ Not started |
 
@@ -900,20 +915,59 @@ the street, and escaped. An early policy drove 14% of its tiles backwards; a rev
 penalty fixed that. With a ground-truth grid the planner absorbs every surprise, so the
 local tier's real test is on the camera-built grid in Phase 8.
 
-### Phase 7 — Decision Fusion (Unit I)
+### Phase 7 — Decision Fusion (Unit I) ✅
 
-- MLP (PyTorch, Adam optimizer, ReLU activations, Dropout regularization) fusing
-  detector confidences + LSTM behaviour signal + DQN Q-values into the vehicle's final
-  action/priority decision
-- `MlpFusion` adapter implementing `IDecisionFusion`
+Design notes: [`docs/architecture/phase7-fusion.md`](docs/architecture/phase7-fusion.md);
+the interface change and two engine corrections:
+[ADR 0003](docs/adr/0003-fusion-sees-the-observation-and-the-world.md).
 
-### Phase 8 — End-to-End Autonomous Integration
+- MLP (PyTorch; Adam, ReLU, Dropout) fusing the DQN's Q-values, the LSTM's behaviour
+  signal, the **onboard camera's sightings** around the vehicle, and its observation
+- `MlpFusion` implements `IDecisionFusion`; `FusedLocalController` runs the whole local
+  stack in the engine's controller slot
+- Fusion's job is concrete: the command center's map lags reality
+  (`LaggedGridSource`, 3 s), the DQN drives into debris it cannot see, the camera can.
+  The label is the DQN's move, made safe
+- Two earlier-phase corrections (ADR 0003): the vehicle now moves through the *real*
+  city (a wrong map used to let it drive through debris), and the command center
+  re-checks its route against every fresh map
 
-- Composition root wires all five adapters into `MissionController`, replacing the
-  manual-control stand-in
-- Full autonomous mission runs; mission statistics logged
-- Profiling against target hardware (RTX laptop GPU, 16GB RAM) — trim batch sizes /
-  resolution as needed
+Outcome (CPU):
+
+| | macro-F1 | collisions (40 missions) | vehicle damage | rescued |
+|---|---|---|---|---|
+| DQN alone | 0.969 | 150 | 20.1% | 143 |
+| best single signal (DQN only) | 0.955 | — | — | — |
+| hand-written camera-veto rule | 0.968 | 0 | 10.4% | **101** |
+| **MLP fusion** | **0.993** | **13** | **2.9%** | **143** |
+
+The rule avoids every crash and rescues 42 fewer people — it freezes whenever the
+detector wrongly sees debris. Fusion avoids 91% of crashes at no cost to the mission.
+
+### Phase 8 — End-to-End Autonomous Integration ✅
+
+- `AutonomyStack` (`autonomy/stack.py`) loads every trained model once and wires each
+  mission: CCTV -> degrade -> denoise -> batched YOLO -> belief grid -> A*, and
+  DQN + LSTM + onboard camera -> MLP fusion as the local controller. No ground truth
+  anywhere in the loop; manual override stays one key away in the window
+- Every stage timed on the real wiring (`autonomy/profiling.py`); every mission written
+  as a JSON `MissionRecord` to `runs/missions/` for the Phase 9 dashboard
+- `IVisionDetector.detect_many` batches the four CCTV frames (default loops `detect`);
+  `ThrottledGridSource` re-perceives every N refreshes on slow hardware
+- The route re-check is debounced (`mission.block_confirm_refreshes`, 3): a one-frame
+  detector phantom beside a victim had them abandoned
+- `scripts/run_autonomous.py` (window or `--headless`, prints the profile),
+  `scripts/evaluate_autonomy.py` (M8), `configs/autonomy.yaml`
+
+Outcome (CPU, 20 new missions, random starts):
+
+| | rescued | lost | collisions | completed |
+|---|---|---|---|---|
+| **full stack, camera-built map** | **72** | **2** | **0** | **100%** |
+| reference, ground-truth map | 77 | 1 | 0 | 100% |
+
+413 ms per tick on CPU, 345 of it the denoiser; the decision models cost 1.5 ms.
+Design notes: [`docs/architecture/phase8-integration.md`](docs/architecture/phase8-integration.md).
 
 ### Phase 9 — Dashboard, Testing, Documentation & Deployment
 
@@ -953,10 +1007,16 @@ local tier's real test is on the camera-built grid in Phase 8.
       follower's rescues on the same held-out missions; reached 104% (149 vs 143 of 40
       missions), parity under a harsher disaster. See
       [phase6-reinforcement.md](docs/architecture/phase6-reinforcement.md).)*
-- [ ] **M7 — Decides**: MLP fusion outperforms any single upstream signal on a fused
-      decision-quality metric. *(Phase 7)*
-- [ ] **M8 — Fully Autonomous**: a complete mission (spawn → rescue all reachable
-      victims → return to safe zone) runs with zero human input. *(Phase 8)*
+- [x] **M7 — Decides**: MLP fusion outperforms any single upstream signal on a fused
+      decision-quality metric. *(Phase 7 — macro-F1 0.993 vs 0.955 for the best single
+      signal; on 40 held-out missions with a lagging map, collisions 150 → 13 and vehicle
+      damage 20% → 3% at no cost in rescues. See
+      [phase7-fusion.md](docs/architecture/phase7-fusion.md).)*
+- [x] **M8 — Fully Autonomous**: a complete mission (spawn → rescue all reachable
+      victims → return to safe zone) runs with zero human input. *(Phase 8 — threshold:
+      ≥90% of missions completed and ≥90% of a ground-truth reference's rescues; on 20
+      held-out missions, 100% completed and 94% of the reference's rescues, with zero
+      collisions. See [phase8-integration.md](docs/architecture/phase8-integration.md).)*
 - [ ] **M9 — Shippable**: dashboard, docs, and deployment pipeline complete; project
       demoable end-to-end from a clean checkout. *(Phase 9)*
 
@@ -993,9 +1053,10 @@ class ILocalController(ABC):                   # local: DQN (Phase 6)
 
 # interfaces/decision.py
 class IDecisionFusion(ABC):
-    def fuse(
+    def fuse(                                  # amended in Phase 7, ADR 0003
         self,
-        detections: list[Detection],
+        observation: LocalObservation,
+        sightings: Sequence[WorldDetection],   # onboard camera, in map tiles
         behaviour: BehaviourSignal,
         local_decision: LocalDecision,
     ) -> FinalAction: ...
@@ -1242,10 +1303,13 @@ docs/
 │   ├── phase3-detection.md
 │   ├── phase4-denoising.md
 │   ├── phase5-sequence.md
-│   └── phase6-reinforcement.md
+│   ├── phase6-reinforcement.md
+│   ├── phase7-fusion.md
+│   └── phase8-integration.md
 ├── adr/                          # Architecture Decision Records
 │   ├── 0001-config-driven-yaml-dataclasses.md
-│   └── 0002-two-tier-navigation-and-command-center.md
+│   ├── 0002-two-tier-navigation-and-command-center.md
+│   └── 0003-fusion-sees-the-observation-and-the-world.md
 └── api/                          # generated or hand-written interface reference
 ```
 

@@ -95,12 +95,20 @@ class MissionConfig:
             ``urgency_weight * (1 - health/100)``, so at ``0.0`` the
             controller always takes the cheapest victim to reach and at high
             values it will cross the city for someone critical.
+        block_confirm_refreshes: How many consecutive map refreshes must
+            show the route ahead blocked before the command center drops it.
+            ``1`` reacts to a single frame. With a real detector that is
+            fragile: a one-tick phantom obstacle beside a victim made the
+            command center abandon them, and they died (Phase 8). Three
+            refreshes — 0.3 s — ignores flicker and still reacts to a
+            collapse that is really there.
     """
 
     time_limit_seconds: float = 300.0
     replan_on_blocked_route: bool = True
     min_battery_to_continue: float = 15.0
     urgency_weight: float = 14.0
+    block_confirm_refreshes: int = 3
 
     def __post_init__(self) -> None:
         if self.time_limit_seconds <= 0.0:
@@ -115,6 +123,11 @@ class MissionConfig:
         if self.urgency_weight < 0.0:
             raise ConfigValidationError(
                 f"mission.urgency_weight must be non-negative, got {self.urgency_weight}"
+            )
+        if self.block_confirm_refreshes < 1:
+            raise ConfigValidationError(
+                f"mission.block_confirm_refreshes must be at least 1, "
+                f"got {self.block_confirm_refreshes}"
             )
 
 
@@ -964,6 +977,160 @@ class DqnTrainingConfig:
         """Held-out seeds, directly after the training ones."""
         first = self.seed_base + self.train_seeds
         return range(first, first + self.eval_seeds)
+
+
+@dataclass(frozen=True)
+class FusionTrainingConfig:
+    """Data generation, network and training for decision fusion (Unit I).
+
+    Attributes:
+        data_dir: Where recorded fusion samples are written.
+        runs_dir: Where checkpoints and the metric log are written.
+        belief_lag: How many map refreshes the command center's map trails
+            reality by while data is recorded and missions are evaluated —
+            the condition fusion exists for. See ``LaggedGridSource``.
+        train_missions: Missions recorded for training.
+        val_missions: Missions recorded for validation, never trained on.
+        seed_base: First hazard seed; validation seeds follow training.
+        max_ticks: Tick budget per recorded mission.
+        hidden_sizes: MLP hidden layers.
+        dropout: Dropout after every hidden layer.
+        epochs: Maximum passes over the training samples.
+        batch_size: Samples per step.
+        learning_rate: Adam step size.
+        weight_decay: Adam L2 penalty.
+        patience: Epochs without a validation improvement before stopping.
+        device: ``"auto"``, ``"cpu"``, ``"cuda"``, or a device index.
+        seed: Fixed so a run is reproducible.
+    """
+
+    data_dir: Path = Path("data/fusion")
+    runs_dir: Path = Path("models/fusion")
+    belief_lag: int = 30
+    train_missions: int = 150
+    val_missions: int = 50
+    seed_base: int = 5000
+    max_ticks: int = 1500
+    hidden_sizes: tuple[int, ...] = (64, 64)
+    dropout: float = 0.2
+    epochs: int = 60
+    batch_size: int = 256
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-5
+    patience: int = 10
+    device: str = "auto"
+    seed: int = 20250810
+
+    def __post_init__(self) -> None:
+        for name in (
+            "train_missions",
+            "val_missions",
+            "max_ticks",
+            "epochs",
+            "batch_size",
+        ):
+            if getattr(self, name) <= 0:
+                raise ConfigValidationError(f"fusion.{name} must be positive")
+        for name in ("belief_lag", "patience"):
+            if getattr(self, name) < 0:
+                raise ConfigValidationError(f"fusion.{name} must be non-negative")
+        if self.learning_rate <= 0.0 or self.weight_decay < 0.0:
+            raise ConfigValidationError(
+                "fusion.learning_rate must be positive and weight_decay non-negative"
+            )
+        if not 0.0 <= self.dropout < 1.0:
+            raise ConfigValidationError(f"fusion.dropout must be within [0, 1), got {self.dropout}")
+        if not self.hidden_sizes or any(size <= 0 for size in self.hidden_sizes):
+            raise ConfigValidationError("fusion.hidden_sizes must be a non-empty list of positives")
+
+    @property
+    def training_seeds(self) -> range:
+        """Hazard seeds recorded for training."""
+        return range(self.seed_base, self.seed_base + self.train_missions)
+
+    @property
+    def validation_seeds(self) -> range:
+        """Held-out seeds, directly after the training ones."""
+        first = self.seed_base + self.train_missions
+        return range(first, first + self.val_missions)
+
+
+@dataclass(frozen=True)
+class AutonomyModels:
+    """Which trained file fills each slot of the full stack.
+
+    Attributes:
+        cctv_detector: YOLO weights for the four CCTV cameras. With a
+            denoiser, a detector trained on denoised frames (Phase 4).
+        denoiser: Autoencoder weights, or ``None`` to feed the CCTV detector
+            the degraded frames directly.
+        onboard_detector: YOLO weights for the vehicle's own camera — the
+            detector the fusion network was trained against (Phase 7).
+        dqn: The local controller (Phase 6).
+        lstm: The behaviour predictor, trained on the DQN's driving (Phase 7).
+        fusion: The decision-fusion network (Phase 7).
+    """
+
+    cctv_detector: Path = Path("models/yolo/denoised/weights/best.pt")
+    denoiser: Path | None = Path("models/autoencoder/sentry/best.pt")
+    onboard_detector: Path = Path("models/yolo/labelfix/weights/best.pt")
+    dqn: Path = Path("models/dqn/sentry/best.zip")
+    lstm: Path = Path("models/lstm/dqn/best.pt")
+    fusion: Path = Path("models/fusion/sentry/fusion/best.pt")
+
+
+@dataclass(frozen=True)
+class AutonomyConfig:
+    """The full autonomous stack (Phase 8): models, compute, and the M8 bar.
+
+    Attributes:
+        models: The trained file for every slot.
+        device: ``"auto"``, ``"cpu"``, ``"cuda"``, or a device index.
+        perception_every: Re-perceive the CCTV map every N refreshes. ``1`` is
+            every tick; ``4`` cuts perception cost by four on a slow machine
+            and keeps the map at most 0.4 s old.
+        belief_lag: Extra lag on the command center's map, in refreshes —
+            ``0`` for the plain camera-built map, ``30`` to reproduce the
+            Phase 7 condition.
+        confidence: Detector confidence threshold, both cameras.
+        image_size: Detector inference resolution; must match training.
+        seed: Seeds the frame degraders, so a mission replays identically.
+        missions_dir: Where each mission's JSON record is written.
+        eval_missions: Held-out missions for ``evaluate_autonomy.py``.
+        eval_seed_base: First of those missions' hazard seeds.
+        completion_threshold: M8 — the share of missions the full stack
+            must complete.
+        rescue_threshold: M8 — the share of the ground-truth follower's
+            rescues the full stack must reach on the same missions.
+    """
+
+    models: AutonomyModels = field(default_factory=AutonomyModels)
+    device: str = "auto"
+    perception_every: int = 1
+    belief_lag: int = 0
+    confidence: float = 0.25
+    image_size: int = 256
+    seed: int = 0
+    missions_dir: Path = Path("runs/missions")
+    eval_missions: int = 20
+    eval_seed_base: int = 7000
+    completion_threshold: float = 0.9
+    rescue_threshold: float = 0.9
+
+    def __post_init__(self) -> None:
+        if self.perception_every < 1:
+            raise ConfigValidationError("autonomy.perception_every must be at least 1")
+        if self.belief_lag < 0:
+            raise ConfigValidationError("autonomy.belief_lag must be non-negative")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ConfigValidationError("autonomy.confidence must be within 0.0-1.0")
+        if self.image_size <= 0 or self.image_size % 32 != 0:
+            raise ConfigValidationError("autonomy.image_size must be a positive multiple of 32")
+        if self.eval_missions <= 0:
+            raise ConfigValidationError("autonomy.eval_missions must be positive")
+        for name in ("completion_threshold", "rescue_threshold"):
+            if not 0.0 < getattr(self, name) <= 1.0:
+                raise ConfigValidationError(f"autonomy.{name} must be within (0, 1]")
 
 
 @dataclass(frozen=True)

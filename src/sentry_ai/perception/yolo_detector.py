@@ -15,6 +15,7 @@ mapping between the two lives here and nowhere else.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -99,6 +100,29 @@ class YoloDetector(IVisionDetector):
         if not results:
             return []
         return self._to_detections(results[0], frame.shape[1], frame.shape[0])
+
+    def detect_many(self, frames: Sequence[NDArray[np.uint8]]) -> list[list[Detection]]:
+        """Detect in all ``frames`` with one batched model call.
+
+        Equivalent to :meth:`detect` on each frame — the same thresholds and
+        conversion — but one forward pass instead of several.
+        """
+        if not frames:
+            return []
+        results = list(
+            self._model.predict(
+                source=[frame[:, :, ::-1] for frame in frames],  # Ultralytics expects BGR
+                conf=self._confidence,
+                iou=self._iou,
+                imgsz=self._image_size,
+                device=self._device,
+                verbose=False,
+            )
+        )
+        return [
+            self._to_detections(result, frame.shape[1], frame.shape[0])
+            for result, frame in zip(results, frames, strict=True)
+        ]
 
     @staticmethod
     def _to_detections(result: Any, width: int, height: int) -> list[Detection]:

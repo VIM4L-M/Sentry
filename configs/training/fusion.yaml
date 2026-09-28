@@ -1,0 +1,32 @@
+# Decision fusion for Unit I (PyTorch MLP: Adam, ReLU, Dropout).
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_fusion_config().
+# Every key is optional — an omitted key uses the dataclass default in
+# sentry_ai.config.schema.
+
+data_dir: "data/fusion"
+runs_dir: "models/fusion"
+
+# The condition fusion exists for: the command center's map trails reality
+# by this many refreshes (~ticks; 30 = 3 simulated seconds), while the
+# vehicle's own camera sees the present. With no lag the DQN never meets an
+# obstacle its map does not show, and there is nothing to fuse.
+belief_lag: 30
+
+# Recorded missions, split by mission; validation seeds follow training.
+train_missions: 150
+val_missions: 50
+seed_base: 5000
+max_ticks: 1500
+
+# The MLP. Small on purpose: 31 inputs, 5 actions, one narrow decision.
+hidden_sizes: [64, 64]
+dropout: 0.2
+
+epochs: 60
+batch_size: 256
+learning_rate: 0.001
+weight_decay: 0.00001
+patience: 10
+
+device: "auto"
+seed: 20250810

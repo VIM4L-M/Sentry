@@ -25,6 +25,7 @@ from sentry_ai.domain.entities import Position
 from sentry_ai.domain.enums import TerrainType
 from sentry_ai.domain.map import CityMap
 from sentry_ai.interfaces.navigation import ILocalController
+from sentry_ai.interfaces.world import IOccupancyGridSource
 from sentry_ai.simulation.factory import Mission, build_mission
 
 #: Builds a fresh mission for a seed, driven by the given controller (or the
@@ -79,11 +80,22 @@ class MissionFactory:
             randomise_start=randomise_start,
         )
 
-    def build(self, seed: int, controller: ILocalController | None = None) -> Mission:
+    def build(
+        self,
+        seed: int,
+        controller: ILocalController | None = None,
+        grid_source: IOccupancyGridSource | None = None,
+    ) -> Mission:
         """A new, unstarted mission for ``seed``.
 
         The same seed always gives the same disaster and the same start, so
         two controllers can be compared on identical missions.
+
+        Args:
+            seed: Hazard seed, and the draw for the start tile.
+            controller: Who drives; ``None`` is the waypoint follower.
+            grid_source: Where the command center's map comes from; ``None``
+                is ground truth. Phase 7 passes a ``LaggedGridSource``.
         """
         return build_mission(
             city_map=CityMap.from_config(self.map_data_for(seed)),
@@ -91,6 +103,7 @@ class MissionFactory:
             vehicle_config=self._vehicle_config,
             controller=controller,
             hazard_seed=seed,
+            grid_source=grid_source,
         )
 
     def map_data_for(self, seed: int) -> dict[str, Any]:

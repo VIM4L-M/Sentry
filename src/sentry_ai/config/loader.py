@@ -18,12 +18,15 @@ from sentry_ai.common.types import PathLike
 from sentry_ai.config.schema import (
     AppConfig,
     AutoencoderTrainingConfig,
+    AutonomyConfig,
+    AutonomyModels,
     BatteryConfig,
     CameraSpec,
     DebrisCollapseConfig,
     DegradationConfig,
     DqnTrainingConfig,
     FireSpreadConfig,
+    FusionTrainingConfig,
     HazardConfig,
     LstmTrainingConfig,
     MarkerScaleConfig,
@@ -352,6 +355,86 @@ class ConfigLoader:
             ),
         )
 
+    def load_fusion_config(self, relative_path: PathLike) -> FusionTrainingConfig:
+        """Load ``configs/training/fusion.yaml`` into a :class:`FusionTrainingConfig`.
+
+        Raises:
+            AssetNotFoundError: If the file does not exist.
+            ConfigurationError: If a value has the wrong type.
+            ConfigValidationError: If a value is out of range.
+        """
+        data = self.load_yaml(relative_path)
+        defaults = FusionTrainingConfig()
+        hidden = data.get("hidden_sizes", list(defaults.hidden_sizes))
+        if not isinstance(hidden, list) or not all(
+            isinstance(size, int) and not isinstance(size, bool) for size in hidden
+        ):
+            raise ConfigurationError(
+                f"config key 'hidden_sizes' must be a list of ints, got {hidden!r}"
+            )
+        return FusionTrainingConfig(
+            data_dir=self.resolve(str(data.get("data_dir", defaults.data_dir))),
+            runs_dir=self.resolve(str(data.get("runs_dir", defaults.runs_dir))),
+            belief_lag=_as_int(data, "belief_lag", defaults.belief_lag),
+            train_missions=_as_int(data, "train_missions", defaults.train_missions),
+            val_missions=_as_int(data, "val_missions", defaults.val_missions),
+            seed_base=_as_int(data, "seed_base", defaults.seed_base),
+            max_ticks=_as_int(data, "max_ticks", defaults.max_ticks),
+            hidden_sizes=tuple(hidden),
+            dropout=_as_float(data, "dropout", defaults.dropout),
+            epochs=_as_int(data, "epochs", defaults.epochs),
+            batch_size=_as_int(data, "batch_size", defaults.batch_size),
+            learning_rate=_as_float(data, "learning_rate", defaults.learning_rate),
+            weight_decay=_as_float(data, "weight_decay", defaults.weight_decay),
+            patience=_as_int(data, "patience", defaults.patience),
+            device=str(data.get("device", defaults.device)),
+            seed=_as_int(data, "seed", defaults.seed),
+        )
+
+    def load_autonomy_config(self, relative_path: PathLike) -> AutonomyConfig:
+        """Load ``configs/autonomy.yaml`` into an :class:`AutonomyConfig`.
+
+        Model paths resolve against the project root; ``denoiser: null``
+        runs the CCTV detector on degraded frames with no denoiser.
+
+        Raises:
+            AssetNotFoundError: If the file does not exist.
+            ConfigurationError: If a value has the wrong type.
+            ConfigValidationError: If a value is out of range.
+        """
+        data = self.load_yaml(relative_path)
+        defaults = AutonomyConfig()
+        models_data = _require_mapping(data.get("models", {}), "autonomy.models")
+        model_defaults = AutonomyModels()
+
+        def model(name: str) -> Path:
+            return self.resolve(str(models_data.get(name, getattr(model_defaults, name))))
+
+        denoiser_value = models_data.get("denoiser", model_defaults.denoiser)
+        return AutonomyConfig(
+            models=AutonomyModels(
+                cctv_detector=model("cctv_detector"),
+                denoiser=None if denoiser_value is None else self.resolve(str(denoiser_value)),
+                onboard_detector=model("onboard_detector"),
+                dqn=model("dqn"),
+                lstm=model("lstm"),
+                fusion=model("fusion"),
+            ),
+            device=str(data.get("device", defaults.device)),
+            perception_every=_as_int(data, "perception_every", defaults.perception_every),
+            belief_lag=_as_int(data, "belief_lag", defaults.belief_lag),
+            confidence=_as_float(data, "confidence", defaults.confidence),
+            image_size=_as_int(data, "image_size", defaults.image_size),
+            seed=_as_int(data, "seed", defaults.seed),
+            missions_dir=self.resolve(str(data.get("missions_dir", defaults.missions_dir))),
+            eval_missions=_as_int(data, "eval_missions", defaults.eval_missions),
+            eval_seed_base=_as_int(data, "eval_seed_base", defaults.eval_seed_base),
+            completion_threshold=_as_float(
+                data, "completion_threshold", defaults.completion_threshold
+            ),
+            rescue_threshold=_as_float(data, "rescue_threshold", defaults.rescue_threshold),
+        )
+
     def load_simulation_config(self, relative_path: PathLike) -> SimulationConfig:
         """Load ``simulation.yaml`` into a :class:`SimulationConfig`.
 
@@ -379,6 +462,9 @@ class ConfigLoader:
             ),
             urgency_weight=_as_float(
                 mission_data, "urgency_weight", MissionConfig.urgency_weight
+            ),
+            block_confirm_refreshes=_as_int(
+                mission_data, "block_confirm_refreshes", MissionConfig.block_confirm_refreshes
             ),
         )
         planner = PlannerConfig(

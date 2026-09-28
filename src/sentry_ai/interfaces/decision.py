@@ -5,6 +5,11 @@ combines every upstream AI signal — the detector's findings, the LSTM's
 behaviour prediction, and the DQN's Q-values — into the single action the
 vehicle executes this tick. This file defines the contract only.
 
+The signature was amended in Phase 7 (ADR 0003): fusion receives the
+vehicle's observation and world-space camera sightings rather than raw
+image-space detections, because "is there something on the tile ahead?"
+cannot be answered from pixels alone.
+
 The navigation contracts that used to live here (``VehicleAction``,
 ``PolicyOutput``, ``INavigationPolicy``) moved to
 :mod:`sentry_ai.interfaces.navigation` when routing was split into a global
@@ -15,11 +20,12 @@ A* tier and a local DQN tier — see
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sentry_ai.common.exceptions import DomainValidationError
-from sentry_ai.interfaces.navigation import LocalAction, LocalDecision
-from sentry_ai.interfaces.perception import Detection
+from sentry_ai.interfaces.navigation import LocalAction, LocalDecision, LocalObservation
+from sentry_ai.interfaces.perception import WorldDetection
 from sentry_ai.interfaces.sequence import BehaviourSignal
 
 
@@ -54,9 +60,17 @@ class IDecisionFusion(ABC):
     @abstractmethod
     def fuse(
         self,
-        detections: list[Detection],
+        observation: LocalObservation,
+        sightings: Sequence[WorldDetection],
         behaviour: BehaviourSignal,
         local_decision: LocalDecision,
     ) -> FinalAction:
-        """Combine every upstream signal into the vehicle's final action this tick."""
+        """Combine every upstream signal into the vehicle's final action this tick.
+
+        Args:
+            observation: The vehicle's situation, as the local controller saw it.
+            sightings: What the vehicle's own camera reports now, in map tiles.
+            behaviour: The sequence model's near-term behaviour prediction.
+            local_decision: The local controller's choice and its Q-values.
+        """
         raise NotImplementedError

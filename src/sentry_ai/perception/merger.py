@@ -19,12 +19,12 @@ The merge rule is deliberately asymmetric between people and hazards; see
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from sentry_ai.common.logging_config import get_logger
 from sentry_ai.domain.entities import Position
 from sentry_ai.domain.enums import EntityKind
-from sentry_ai.interfaces.perception import Detection
+from sentry_ai.interfaces.perception import Detection, WorldDetection
 from sentry_ai.sensors.camera import CameraView
 
 logger = get_logger(__name__)
@@ -68,54 +68,6 @@ class CameraObservation:
         return self.view.camera_id
 
 
-@dataclass(frozen=True)
-class WorldDetection:
-    """One object, in map space, possibly seen by several cameras.
-
-    Attributes:
-        label: What it is.
-        tiles: Every world tile it covers. A victim or a piece of debris
-            occupies one; a fire occupies its whole footprint.
-        confidence: How sure the detector was. For a merged sighting this is
-            the most confident single view of it.
-        camera_ids: Every camera that contributed, so downstream code can
-            tell a corroborated detection from a lone one.
-    """
-
-    label: EntityKind
-    tiles: frozenset[Position]
-    confidence: float
-    camera_ids: frozenset[str] = field(default_factory=frozenset)
-
-    def __post_init__(self) -> None:
-        if not self.tiles:
-            raise ValueError("WorldDetection must cover at least one tile")
-        if not 0.0 <= self.confidence <= 1.0:
-            raise ValueError(
-                f"WorldDetection.confidence must be within 0.0-1.0, got {self.confidence}"
-            )
-
-    @property
-    def position(self) -> Position:
-        """A single representative tile — the one nearest the footprint's centre.
-
-        Single-tile detections return that tile. For a fire this is where the
-        blaze is *reported*, which is what a mission log or a HUD marker
-        wants; code that must mark every burning cell uses :attr:`tiles`.
-        """
-        if len(self.tiles) == 1:
-            return next(iter(self.tiles))
-        mean_x = sum(tile.x for tile in self.tiles) / len(self.tiles)
-        mean_y = sum(tile.y for tile in self.tiles) / len(self.tiles)
-        return min(
-            sorted(self.tiles, key=lambda tile: (tile.y, tile.x)),
-            key=lambda tile: (tile.x - mean_x) ** 2 + (tile.y - mean_y) ** 2,
-        )
-
-    @property
-    def corroborated(self) -> bool:
-        """Whether more than one camera saw this."""
-        return len(self.camera_ids) > 1
 
 
 class DetectionMerger:

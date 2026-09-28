@@ -63,10 +63,11 @@ class ModelObserver(IFrameObserver):
         self._detector = detector
 
     def observe(self, frames: Sequence[CameraFrame]) -> list[CameraObservation]:
-        """Detect in each frame, keeping it paired with the view that made it."""
+        """Detect in every frame in one batch, keeping each paired with its view."""
+        found = self._detector.detect_many([frame.pixels for frame in frames])
         return [
-            CameraObservation(frame.view, tuple(self._detector.detect(frame.pixels)))
-            for frame in frames
+            CameraObservation(frame.view, tuple(detections))
+            for frame, detections in zip(frames, found, strict=True)
         ]
 
 

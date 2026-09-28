@@ -28,6 +28,7 @@ from sentry_ai.common.logging_config import get_logger
 from sentry_ai.config.schema import DqnTrainingConfig
 from sentry_ai.decision.dqn_controller import DqnLocalController
 from sentry_ai.interfaces.navigation import ILocalController
+from sentry_ai.simulation.factory import Mission
 from sentry_ai.simulation.mission import MissionPhase
 from sentry_ai.training.checkpoint import write_metadata
 from sentry_ai.training.metrics import CsvMetricLogger
@@ -52,6 +53,7 @@ class MissionResult:
     collisions: int
     ticks: int
     failure_reason: str = ""
+    damage: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,13 @@ class ControllerScore:
     def collisions(self) -> int:
         """Refused moves, across every mission."""
         return sum(result.collisions for result in self.results)
+
+    @property
+    def mean_damage(self) -> float:
+        """Average vehicle health lost per mission, in percentage points."""
+        if not self.missions:
+            return 0.0
+        return sum(result.damage for result in self.results) / self.missions
 
     @property
     def completion_rate(self) -> float:
@@ -137,15 +146,20 @@ def drive_missions(
     controller: Callable[[], ILocalController | None],
     seeds: Sequence[int],
     max_ticks: int,
+    prepare: Callable[[Mission, ILocalController | None], None] | None = None,
 ) -> ControllerScore:
     """Run one mission per seed with a fresh controller and collect the results.
 
     ``controller`` returning ``None`` means the factory's default driver —
-    the waypoint follower.
+    the waypoint follower. ``prepare`` runs on each built mission before it
+    starts — how a controller whose camera needs the mission's city gets it.
     """
     results = []
     for seed in seeds:
-        mission = factory(seed, controller())
+        driver = controller()
+        mission = factory(seed, driver)
+        if prepare is not None:
+            prepare(mission, driver)
         stats = mission.engine.run(max_ticks=max_ticks)
         results.append(
             MissionResult(
@@ -156,6 +170,7 @@ def drive_missions(
                 collisions=stats.collisions,
                 ticks=stats.ticks,
                 failure_reason=stats.failure_reason,
+                damage=100.0 - mission.city_map.vehicle.health_percent,
             )
         )
     return ControllerScore(results=tuple(results))

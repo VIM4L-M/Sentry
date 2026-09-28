@@ -31,6 +31,8 @@ data/processed/**
 data/synthetic/**
 data/denoised/**
 data/trajectories/**
+data/trajectories_*/**
+data/fusion/**
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 

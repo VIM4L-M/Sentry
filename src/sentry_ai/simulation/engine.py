@@ -21,7 +21,7 @@ from sentry_ai.common.logging_config import get_logger
 from sentry_ai.config.schema import SimulationConfig, VehicleConfig
 from sentry_ai.domain.entities import Position, Vehicle
 from sentry_ai.domain.map import CityMap
-from sentry_ai.domain.occupancy import OccupancyCode
+from sentry_ai.domain.occupancy import OccupancyCode, OccupancyGrid
 from sentry_ai.interfaces.navigation import ILocalController, LocalDecision, LocalObservation
 from sentry_ai.interfaces.world import IWorldProcess, WorldChange
 from sentry_ai.simulation.events import EventKind
@@ -122,7 +122,14 @@ class SimulationEngine:
         vehicle = self._city_map.vehicle
         world_change = self._advance_world(vehicle)
         decision = self._controller.decide(self.observe())
-        outcome = self._vehicle_controller.apply(vehicle, decision.action, self._mission.grid)
+        # The vehicle moves through the real city, not through the command
+        # center's belief about it. Until Phase 7 the belief grid was used
+        # here, which let a vehicle drive straight through debris its map
+        # had missed — a wrong map could never cause a crash, so nothing
+        # downstream of perception could ever be shown to prevent one.
+        outcome = self._vehicle_controller.apply(
+            vehicle, decision.action, OccupancyGrid.from_city_map(self._city_map)
+        )
 
         if outcome.collided:
             self._mission.stats.collisions += 1
