@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from sentry_ai.decision.scene_reasoner import Action, DecisionHold, SeenObject, decide
+from sentry_ai.decision.scene_reasoner import (
+    Action,
+    DecisionHold,
+    SeenObject,
+    decide,
+    signal_colour,
+)
 
 FAR_LEFT = (0.05, 0.4, 0.2, 0.55)
 FAR_AHEAD = (0.45, 0.4, 0.55, 0.55)
@@ -13,11 +19,40 @@ def test_an_empty_road_means_proceed() -> None:
     assert decide([]).action is Action.PROCEED
 
 
-def test_traffic_means_wait() -> None:
+def test_distant_traffic_means_follow_not_stop() -> None:
     cars = [SeenObject("car", 0.8, FAR_LEFT) for _ in range(4)]
     decision = decide(cars)
+    assert decision.action is Action.SLOW
+    assert "follow" in decision.headline
+
+
+def test_a_close_queue_means_wait() -> None:
+    queue = [SeenObject("car", 0.8, (0.4, 0.5, 0.6, 0.8)) for _ in range(4)]
+    decision = decide(queue)
     assert decision.action is Action.WAIT
     assert "wait" in decision.headline
+
+
+def test_green_signal_moves_with_the_traffic() -> None:
+    queue = [SeenObject("car", 0.8, (0.4, 0.5, 0.6, 0.8)) for _ in range(6)]
+    green = SeenObject("traffic light", 0.7, FAR_AHEAD, "green")
+    decision = decide([*queue, green])
+    assert decision.action is Action.CAUTION
+    assert "move with the traffic" in decision.headline
+
+
+def test_red_signal_with_traffic_means_stop() -> None:
+    cars = [SeenObject("car", 0.8, FAR_LEFT) for _ in range(4)]
+    red = SeenObject("traffic light", 0.7, FAR_AHEAD, "red")
+    assert decide([*cars, red]).action is Action.STOP
+
+
+def test_the_confident_signal_outvotes_a_faint_far_one() -> None:
+    near_green = SeenObject("traffic light", 0.72, FAR_AHEAD, "green")
+    faint_red = SeenObject("traffic light", 0.1, FAR_LEFT, "red")
+    assert signal_colour([near_green, faint_red]) == "green"
+    assert signal_colour([SeenObject("traffic light", 0.5, FAR_AHEAD)]) == "unknown"
+    assert signal_colour([]) is None
 
 
 def test_a_person_in_front_means_stop() -> None:

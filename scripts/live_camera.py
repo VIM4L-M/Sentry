@@ -12,11 +12,13 @@ two-wheeler, cycle, traffic light, stop sign, cow, dog, horse, sheep), at a
 confidence of 0.5 or more. COCO knows 80 everyday classes, and a camera
 pointed around a room otherwise reports hands as teddy bears and brushes as
 refrigerators. ``--all-classes`` shows everything. COCO has no autorickshaw
-class, so autos show as "Auto/Truck" (sometimes "Car").
+class; a bus or truck box that is mostly autorickshaw yellow is shown as
+"Auto-rickshaw", otherwise autos show as "Auto/Truck" (sometimes "Car").
 
-The model is YOLOv8s by default (more accurate than the 8n used in the
-command center, still real-time on a laptop GPU); ``--model n|s|m`` picks
-another. ``--sentry`` uses the mission's own detector, trained on the
+The model is YOLOv8m at 1280 px by default (about 45 ms a frame on an RTX
+4060): small, far traffic lights are only found at that size, and the signal
+colour decides between going with the traffic and waiting. ``--model n|s``
+and ``--imgsz 640`` are faster. ``--sentry`` uses the mission's own detector, trained on the
 simulated city's top-down frames, which is expected to do badly on real
 photos — it knows the world it was trained on.
 
@@ -61,11 +63,18 @@ ROAD_CLASSES: dict[str, str] = {
     "bicycle": "Cycle",
     "traffic light": "Signal",
     "stop sign": "Stop sign",
+    "auto": "Auto-rickshaw",
     "cow": "Cow",
     "dog": "Dog",
     "horse": "Horse",
     "sheep": "Sheep",
 }
+
+#: Traffic lights are small and far away, so they keep a lower confidence bar.
+LIGHT_CONFIDENCE = 0.3
+
+#: Share of yellow pixels that turns a COCO "bus"/"truck" into an autorickshaw.
+AUTO_YELLOW_SHARE = 0.09
 
 #: Where snapshots and annotated images are written.
 OUTPUT_DIR = "runs/live"
@@ -91,7 +100,8 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     source = "mission detector" if args.sentry else f"YOLOv8{weights.stem[-1]} COCO"
     title = f"SENTRY AI - live detection ({source})"
-    view = _View(cv2, model, device, args.confidence, not args.all_classes and not args.sentry)
+    road_only = not args.all_classes and not args.sentry
+    view = _View(cv2, model, device, args.confidence, road_only, args.imgsz)
 
     if args.image:
         frame = cv2.imread(args.image)
@@ -122,8 +132,17 @@ def main() -> int:
 class _View:
     """Detects, decides, and draws one frame."""
 
-    def __init__(self, cv2, model, device: str, confidence: float, road_only: bool) -> None:  # noqa: ANN001
+    def __init__(  # noqa: PLR0913
+        self,
+        cv2,
+        model,
+        device: str,
+        confidence: float,
+        road_only: bool,
+        imgsz: int = 1280,  # noqa: ANN001
+    ) -> None:
         self._cv2 = cv2
+        self._imgsz = imgsz
         self._model = model
         self._device = device
         self._confidence = confidence
@@ -132,8 +151,9 @@ class _View:
 
     def annotate(self, frame, now: float):  # noqa: ANN001, ANN201
         cv2 = self._cv2
+        floor = min(self._confidence, LIGHT_CONFIDENCE)
         result = self._model.predict(
-            frame, conf=self._confidence, device=self._device, verbose=False
+            frame, conf=floor, imgsz=self._imgsz, device=self._device, verbose=False
         )[0]
         height, width = frame.shape[:2]
         seen: list[SeenObject] = []
@@ -142,9 +162,13 @@ class _View:
             name = result.names[int(box.cls)]
             if self._road_only and name not in ROAD_CLASSES:
                 continue
+            if name != "traffic light" and float(box.conf) < self._confidence:
+                continue
             x0, y0, x1, y1 = (int(v) for v in box.xyxy[0].tolist())
             if name in ("car", "truck") and y1 > 0.93 * height and x1 - x0 > 0.6 * width:
                 continue  # the dashcam car's own bonnet, not a road user
+            if name in ("bus", "truck") and _is_auto_yellow(frame[y0:y1, x0:x1]):
+                name = "auto"  # COCO has no autorickshaw class; Chennai autos are yellow
             colour = _light_colour(frame[y0:y1, x0:x1]) if name == "traffic light" else None
             share = (x0 / width, y0 / height, x1 / width, y1 / height)
             seen.append(SeenObject(name, float(box.conf), share, colour))
@@ -202,7 +226,7 @@ def _box(cv2, image, xyxy, text: str, bgr) -> None:  # noqa: ANN001
 def _box_bgr(name: str) -> tuple[int, int, int]:
     if name == "person":
         return (80, 80, 255)
-    if name in ("truck", "bus"):
+    if name in ("truck", "bus", "auto"):
         return (40, 190, 255)
     if name in ("cow", "dog", "horse", "sheep"):
         return (200, 120, 255)
@@ -256,6 +280,17 @@ def _wrap(text: str, width: int) -> list[str]:
     return lines
 
 
+def _is_auto_yellow(crop) -> bool:  # noqa: ANN001
+    """Whether a bus/truck box is mostly the yellow of an Indian autorickshaw."""
+    import cv2  # noqa: PLC0415
+
+    if crop.size == 0:
+        return False
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    yellow = (hsv[..., 0] >= 15) & (hsv[..., 0] <= 38) & (hsv[..., 1] > 60) & (hsv[..., 2] > 60)
+    return float(yellow.mean()) > AUTO_YELLOW_SHARE
+
+
 def _light_colour(crop) -> str | None:  # noqa: ANN001
     """``red``, ``amber`` or ``green`` for the brightest lamp in a traffic-light crop."""
     import cv2  # noqa: PLC0415
@@ -282,7 +317,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--camera", type=int, default=0, help="Camera index (default 0).")
     parser.add_argument("--image", help="Detect on this image file instead of the camera.")
     parser.add_argument("--confidence", type=float, default=0.5, help="Minimum confidence.")
-    parser.add_argument("--model", choices=("n", "s", "m"), default="s", help="YOLOv8 size.")
+    parser.add_argument("--model", choices=("n", "s", "m"), default="m", help="YOLOv8 size.")
+    parser.add_argument(
+        "--imgsz", type=int, default=1280, help="Inference size; 1280 finds far signals."
+    )
     parser.add_argument("--all-classes", action="store_true", help="Show all 80 COCO classes.")
     parser.add_argument("--sentry", action="store_true", help="Use the mission's own detector.")
     parser.add_argument("--cpu", action="store_true", help="Run on the CPU even with a GPU.")

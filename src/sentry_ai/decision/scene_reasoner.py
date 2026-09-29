@@ -32,7 +32,7 @@ class Action(IntEnum):
 #: What each action is called on screen, and its colour (RGB).
 ACTION_TEXT: dict[Action, str] = {
     Action.PROCEED: "PROCEED",
-    Action.CAUTION: "CAUTION",
+    Action.CAUTION: "GO CAREFULLY",
     Action.SLOW: "SLOW DOWN",
     Action.WAIT: "WAIT",
     Action.STOP: "STOP",
@@ -45,7 +45,7 @@ ACTION_COLOUR: dict[Action, tuple[int, int, int]] = {
     Action.STOP: (255, 70, 70),
 }
 
-VEHICLES = frozenset({"car", "truck", "bus", "motorcycle", "bicycle"})
+VEHICLES = frozenset({"car", "truck", "bus", "auto", "motorcycle", "bicycle"})
 ANIMALS = frozenset({"cow", "dog", "horse", "sheep"})
 
 #: A box this tall (share of the frame) is close to the vehicle.
@@ -105,23 +105,9 @@ def decide(seen: list[SeenObject]) -> Decision:
             rules.append((Action.SLOW, "Pedestrian beside the road: I slow down"))
     for animal in animals:
         rules.append((Action.STOP, f"{animal.name.title()} on the road: I wait until it crosses"))
-    for light in (o for o in seen if o.name == "traffic light"):
-        if light.colour == "red":
-            rules.append((Action.STOP, "Red signal: I stop, siren on, cross only when clear"))
-        elif light.colour == "amber":
-            rules.append((Action.SLOW, "Amber signal: I slow and prepare to stop"))
-        elif light.colour == "green":
-            rules.append((Action.CAUTION, "Green signal: I go, watching the junction"))
-        else:
-            rules.append((Action.CAUTION, "Signal ahead: I prepare to stop"))
     if any(o.name == "stop sign" for o in seen):
         rules.append((Action.STOP, "Stop sign: I stop and check both ways"))
-
-    if len(vehicles) >= TRAFFIC_COUNT:
-        rules.append(
-            (Action.WAIT, f"Traffic ahead ({len(vehicles)} vehicles): I wait and keep my gap")
-        )
-        rules.append((Action.WAIT, "If it does not clear, I re-plan to the safer route B"))
+    rules.extend(_signal_and_traffic(signal_colour(seen), vehicles))
     for vehicle in vehicles:
         kind = _vehicle_name(vehicle.name)
         if vehicle.near and vehicle.ahead:
@@ -130,7 +116,7 @@ def decide(seen: list[SeenObject]) -> Decision:
             rules.append((Action.SLOW, f"{kind} alongside: I hold my lane and slow"))
         elif vehicle.name in ("bus", "truck"):
             rules.append((Action.CAUTION, f"{kind} ahead: I leave extra room"))
-        elif vehicle.name in ("motorcycle", "bicycle"):
+        elif vehicle.name in ("motorcycle", "bicycle", "auto"):
             rules.append((Action.CAUTION, f"{kind} ahead: it may swerve, I stay behind"))
 
     if not rules:
@@ -144,10 +130,64 @@ def decide(seen: list[SeenObject]) -> Decision:
     return Decision(action, reasons[0], reasons[1:4])
 
 
+def signal_colour(seen: list[SeenObject]) -> str | None:
+    """The signal's colour, weighted by confidence; ``"unknown"`` if unreadable, None if none.
+
+    A far, faint lamp must not overrule the near, confident one, so each
+    readable light votes with its detection confidence.
+    """
+    lights = [o for o in seen if o.name == "traffic light"]
+    if not lights:
+        return None
+    votes: dict[str, float] = {}
+    for light in lights:
+        if light.colour:
+            votes[light.colour] = votes.get(light.colour, 0.0) + light.confidence
+    return max(votes, key=lambda c: votes[c]) if votes else "unknown"
+
+
+def _signal_and_traffic(signal: str | None, vehicles: list[SeenObject]) -> list[tuple[Action, str]]:
+    """What the signal and the traffic in front call for, taken together.
+
+    Traffic alone is not a reason to stop: on a green signal the vehicle
+    moves with the flow, keeping its gap. It waits only at a red signal or
+    behind a queue that is close and not moving.
+    """
+    count = len(vehicles)
+    queue = count >= TRAFFIC_COUNT
+    close_queue = queue and any(v.ahead and v.height >= NEAR_HEIGHT / 2 for v in vehicles)
+    if signal == "red":
+        rules = [(Action.STOP, "Red signal: I stop at the line; siren on, cross only when clear")]
+        if queue:
+            rules.append((Action.WAIT, f"{count} vehicles queued at the signal: I wait in line"))
+        return rules
+    if signal == "amber":
+        return [(Action.SLOW, "Amber signal: I slow and prepare to stop")]
+    if signal == "green":
+        if queue:
+            return [
+                (Action.CAUTION, f"Green signal: I move with the traffic ({count} vehicles)"),
+                (Action.CAUTION, "Keeping a safe gap to the vehicle in front"),
+            ]
+        return [(Action.CAUTION, "Green signal: I go, watching the junction")]
+    rules = []
+    if signal == "unknown":
+        rules.append((Action.CAUTION, "Signal ahead, colour unclear: I slow and check"))
+    if close_queue:
+        rules.append(
+            (Action.WAIT, f"Traffic queue ahead ({count} vehicles): I wait, keeping my gap")
+        )
+        rules.append((Action.WAIT, "If it does not move, I re-plan to the safer route B"))
+    elif queue:
+        rules.append((Action.SLOW, f"Traffic ahead ({count} vehicles): I follow at a safe gap"))
+    return rules
+
+
 def _vehicle_name(name: str) -> str:
     return {
         "car": "Car",
         "truck": "Auto/Truck",
+        "auto": "Auto-rickshaw",
         "bus": "Bus",
         "motorcycle": "Two-wheeler",
         "bicycle": "Cycle",
