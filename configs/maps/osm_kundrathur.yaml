@@ -37,3 +37,7 @@ fires:
   intensity: 0.6
   radius: 1
 geo: {south: 12.993973777650018, west: 80.09454562578206, north: 12.997567022349982, east: 80.10007717421793}
+
+# Where the city is; the command center uses it to name road users the stock
+# COCO detector cannot tell apart (it has no autorickshaw class).
+region: india

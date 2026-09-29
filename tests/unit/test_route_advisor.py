@@ -70,3 +70,18 @@ def test_pick_safest_prefers_route_b() -> None:
     b = RouteOption("B", "safest", route, 40.0, 0, None, 0.2)
     assert pick_safest([a, b]) is b
     assert pick_safest([]) is None
+
+
+def test_street_detector_relabels_by_region() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sentry_ai.perception.street_detector import REGION_RELABELS, StreetPhotoDetector
+
+    box = SimpleNamespace(cls=0, conf=0.8, xyxy=[SimpleNamespace(tolist=lambda: [1, 2, 3, 4])])
+    result = SimpleNamespace(names={0: "truck"}, boxes=[box])
+    model = SimpleNamespace(predict=lambda *a, **k: [result])
+    india = StreetPhotoDetector(model, relabel=REGION_RELABELS["india"])
+    elsewhere = StreetPhotoDetector(model)
+    assert india.detect(Path("a.jpg"))[0].label == "Auto/Truck"
+    assert elsewhere.detect(Path("b.jpg"))[0].label == "Truck"

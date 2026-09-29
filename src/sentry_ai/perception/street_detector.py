@@ -22,6 +22,10 @@ from sentry_ai.common.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+#: Display relabels per ``region`` of a map config. COCO has no autorickshaw
+#: class, and on Indian streets reports autos as trucks.
+REGION_RELABELS: dict[str, dict[str, str]] = {"india": {"Truck": "Auto/Truck"}}
+
 #: COCO classes worth showing on a street, and what the display calls them.
 STREET_CLASSES: dict[str, str] = {
     "car": "Car",
@@ -46,14 +50,27 @@ class StreetDetection:
 class StreetPhotoDetector:
     """Detects street objects in photos with a pretrained COCO YOLOv8, caching per photo."""
 
-    def __init__(self, model: Any, confidence: float = 0.35) -> None:
-        """Wrap a loaded ``ultralytics.YOLO``; keep detections at or above ``confidence``."""
+    def __init__(
+        self,
+        model: Any,
+        confidence: float = 0.35,
+        relabel: dict[str, str] | None = None,
+    ) -> None:
+        """Wrap a loaded ``ultralytics.YOLO``; keep detections at or above ``confidence``.
+
+        ``relabel`` renames display labels for a region, e.g. ``{"Truck":
+        "Auto/Truck"}`` in India, where COCO — which has no autorickshaw
+        class — reports autorickshaws as trucks.
+        """
         self._model = model
         self._confidence = confidence
+        self._relabel = relabel or {}
         self._cache: dict[str, tuple[StreetDetection, ...]] = {}
 
     @classmethod
-    def from_weights(cls, weights: Path, device: str = "cpu") -> StreetPhotoDetector:
+    def from_weights(
+        cls, weights: Path, device: str = "cpu", relabel: dict[str, str] | None = None
+    ) -> StreetPhotoDetector:
         """Load COCO weights (``models/pretrained/yolov8n.pt``).
 
         Raises:
@@ -66,7 +83,7 @@ class StreetPhotoDetector:
         model = YOLO(str(weights))
         model.to(device)
         logger.info("Loaded street-photo detector %s on %s", weights, device)
-        return cls(model)
+        return cls(model, relabel=relabel)
 
     def detect(self, photo: Path) -> tuple[StreetDetection, ...]:
         """Street objects in ``photo``, from the cache after the first call."""
@@ -83,7 +100,7 @@ class StreetPhotoDetector:
             name = names[int(box.cls)]
             if name in STREET_CLASSES:
                 x0, y0, x1, y1 = (float(v) for v in box.xyxy[0].tolist())
-                found.append(
-                    StreetDetection(STREET_CLASSES[name], float(box.conf), (x0, y0, x1, y1))
-                )
+                label = STREET_CLASSES[name]
+                label = self._relabel.get(label, label)
+                found.append(StreetDetection(label, float(box.conf), (x0, y0, x1, y1)))
         return tuple(found)

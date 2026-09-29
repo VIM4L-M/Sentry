@@ -209,8 +209,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--speed",
         type=float,
-        default=0.3,
-        help="Simulation speed for every scene; 0.3 = three moves a second (default).",
+        default=0.15,
+        help="Simulation speed for every scene; 0.15 = one and a half moves a second (default).",
     )
     return parser.parse_args()
 

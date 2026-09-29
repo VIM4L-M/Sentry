@@ -497,9 +497,15 @@ def _dashboard_inputs(
     detector = None
     weights = PROJECT_ROOT / STREET_DETECTOR_WEIGHTS
     if weights.is_file():
-        from sentry_ai.perception.street_detector import StreetPhotoDetector  # noqa: PLC0415
+        from sentry_ai.perception.street_detector import (  # noqa: PLC0415
+            REGION_RELABELS,
+            StreetPhotoDetector,
+        )
 
-        detector = StreetPhotoDetector.from_weights(weights, _torch_device(args.device))
+        relabel = REGION_RELABELS.get(str(map_data.get("region", "")))
+        detector = StreetPhotoDetector.from_weights(
+            weights, _torch_device(args.device), relabel=relabel
+        )
     return DashboardInputs(
         city_name=app_config.map_config_path.stem.removeprefix("osm_").replace("_", " ").title(),
         route_advisor=RouteAdvisor(

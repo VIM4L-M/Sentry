@@ -498,7 +498,7 @@ and swings through its turns, like a car in a game, instead of hopping
 every model still move tile by tile.
 
 `--speed 0.5` plays the mission in slow motion, and `[` / `]` change the speed live
-(0.1x to 2x). The window and the demo start at 0.3x, three moves a second. Speed changes only how fast ticks
+(0.1x to 2x). The window and the demo start at 0.15x, about 1.5 moves a second. Speed changes only how fast ticks
 happen, never what a tick does, so results are identical at any speed.
 
 **A whole district: Chicago and the drive view.** The importer is not limited to
@@ -625,6 +625,12 @@ safe:
 Safe routing measurably helps. On Chennai, seeds 2 and 3, with the brake off, road
 users hit fell from 4 and 3 to 0 and 0, and brake stops with it on from 10 and 1 to 0.
 Rescues were the same.
+
+**Live camera for the review.** `scripts/live_camera.py` runs the stock COCO YOLOv8 on
+the laptop's webcam, or on any image (`--image photo.jpg`), with boxes and confidences
+in real time. Point it at a person, a phone, a bottle or a printed street photo. On
+Indian maps the command center labels COCO's "truck" as "Auto/Truck", because COCO has
+no autorickshaw class (map `region: india`).
 
 **Chennai at district scale.** `configs/app_chennai.yaml`: 4 km x 4 km around Anna
 Nagar (`osm_chennai.yaml`), satellite imagery, and real Mapillary street photos for

@@ -84,9 +84,9 @@ _CAMERA_REFRESH_TICKS = 3
 #: how fast ticks happen in wall-clock time, never what a tick does.
 MIN_SPEED, MAX_SPEED = 0.1, 2.0
 
-#: Speed the window opens at: three vehicle moves a second, slow enough to
+#: Speed the window opens at: about one and a half vehicle moves a second, slow enough to
 #: follow each decision. At 1.0 the vehicle makes ten moves a second.
-DEFAULT_SPEED = 0.3
+DEFAULT_SPEED = 0.15
 
 #: Maps with more tiles than this are city-sized: the window keeps a fixed
 #: world area, opens in the drive view, and shrinks the whole-map views to fit.

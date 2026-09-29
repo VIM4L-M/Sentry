@@ -646,6 +646,7 @@ def _box_colour(label: str) -> Color:
         "Cycle": _AMBER,
         "Bus": _RED,
         "Truck": _RED,
+        "Auto/Truck": _AMBER,
     }.get(label, _GREEN)
 
 
