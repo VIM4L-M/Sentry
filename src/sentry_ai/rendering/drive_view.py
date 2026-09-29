@@ -47,7 +47,7 @@ _BLOCK_EDGE = Color(44, 48, 58)
 _GROUND = Color(22, 24, 29)
 _TREE = Color(34, 70, 48)
 _DAMAGE = Color(120, 72, 40)
-_ROUTE = Color(58, 132, 255)
+_ROUTE = Color(40, 214, 140)
 _TEXT = Color(232, 234, 238)
 _MUTED = Color(150, 156, 168)
 _WHITE = Color(255, 255, 255)
@@ -186,8 +186,13 @@ class DriveViewRenderer:
         background: pygame.Surface | None = None,
         status: DriveStatus | None = None,
         traffic: TrafficView | None = None,
+        overlays: bool = True,
     ) -> None:
-        """Draw the view of ``city_map`` around ``pose`` into ``area``."""
+        """Draw the view of ``city_map`` around ``pose`` into ``area``.
+
+        ``overlays=False`` leaves out the banner and the minimap, for a
+        layout that shows both in panels of its own (the command center).
+        """
         scale = area.width / self._layout.tiles_across
         anchor = (area.centerx, area.bottom - int(area.height * self._layout.vehicle_height))
         reach = _reach(area, anchor) / scale + 1.5
@@ -203,10 +208,12 @@ class DriveViewRenderer:
         self._draw_labels(surface, city_map, pose, sightings, anchor, scale)
         if traffic is not None:
             self._draw_traffic_tags(surface, pose, traffic, anchor, scale, status)
-        self._draw_banner(surface, area, city_map, route, status)
+        if overlays:
+            self._draw_banner(surface, area, city_map, route, status)
         if traffic is not None and traffic.brake is not None:
             self._draw_brake_alert(surface, area, traffic.brake)
-        self._draw_minimap(surface, area, city_map, pose, route)
+        if overlays:
+            self._draw_minimap(surface, area, city_map, pose, route)
         surface.set_clip(previous_clip)
 
     def draw_camera(

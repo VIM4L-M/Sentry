@@ -76,6 +76,10 @@ class StreetPhotoLibrary:
         steps = abs(tile[0] - vehicle.position.x) + abs(tile[1] - vehicle.position.y)
         return image_id, steps * self._tile_metres
 
+    def path(self, image_id: str) -> Path:
+        """The photo's file on disk, for a detector to read."""
+        return self._folder / f"{image_id}.jpg"
+
     def image(self, image_id: str, size: tuple[int, int]) -> pygame.Surface:
         """The photo scaled to ``size``, loaded once."""
         key = (image_id, size)

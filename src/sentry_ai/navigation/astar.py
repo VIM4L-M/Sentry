@@ -15,7 +15,7 @@ positions. That is a 4x larger state space and still trivial at city scale.
 from __future__ import annotations
 
 import heapq
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from itertools import count
 
 import numpy as np
@@ -53,15 +53,23 @@ _State = tuple[GridCoordinate, int]
 class AStarPlanner(IRoutePlanner):
     """Plans risk-aware shortest routes across an occupancy grid."""
 
-    def __init__(self, config: PlannerConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: PlannerConfig | None = None,
+        extra_cost: Callable[[], Mapping[GridCoordinate, float]] | None = None,
+    ) -> None:
         """Create a planner.
 
         Args:
             config: Cost model. Defaults to :class:`PlannerConfig`'s own
                 defaults, which is what unit tests and the Phase 2
                 stand-in controller use.
+            extra_cost: Extra cost per tile, read at every plan — how the
+                command center steers a route away from heavy traffic
+                (``navigation/route_advisor.py``). ``None`` adds nothing.
         """
         self._config = config if config is not None else PlannerConfig()
+        self._extra_cost = extra_cost
 
     def plan(self, grid: OccupancyGridLike, start: Position, goal: Position) -> Route:
         """Return the cheapest route from ``start`` to ``goal``.
@@ -83,6 +91,9 @@ class AStarPlanner(IRoutePlanner):
             return Route(waypoints=(start,), cost=0.0)
 
         risk = self._risk_field(grid)
+        if self._extra_cost is not None:
+            for tile, cost in self._extra_cost().items():
+                risk[tile] = risk.get(tile, 0.0) + cost
         passable = _passable_lookup(grid)
         goal_coord = goal.as_tuple()
         start_state: _State = (start.as_tuple(), _NO_HEADING)

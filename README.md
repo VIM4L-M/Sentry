@@ -599,6 +599,33 @@ default 0.3 speed. Vehicles keep left, as Indian traffic drives: each is drawn i
 left lane of its direction of travel, with a dashed centre line on straight roads.
 Lanes are drawn, not simulated; the grid still holds one road user per tile.
 
+**The SENTRY command center.** City-sized maps open in a full-window dashboard
+(`rendering/command_center.py`, 1600x900) that answers where the vehicle is, what it
+sees, what the AI detected, what it plans, what the policy chose, and whether it is
+safe:
+- **Header:** the mission, real-world time elapsed, distance to the goal, status.
+- **Live vehicle view:** the drive view, with a speedometer and gear.
+- **Real-world map:** satellite, with the selected route in green, the alternatives
+  dashed, victims, fires and the hospital.
+- **Route comparison:** three real A* plans, shortest (A), safest (B, traffic and
+  fire risk) and clear of hazards (C). Each is scored on traffic level, fire risk
+  and ETA (`navigation/route_advisor.py`). The command center drives B:
+  with traffic, the mission planner itself adds a cost to busy streets.
+- **Environment and hazards:** road users near the vehicle by kind, fires, debris,
+  collisions, brake state.
+- **Front camera:** the real Mapillary photo of the street, with the stock COCO
+  YOLOv8 (`models/pretrained/yolov8n.pt`) boxing the real cars, buses, bikes and
+  people in it (`perception/street_detector.py`). Display only.
+- **Perception:** the simulated onboard frame, and what the mission's own YOLO
+  reports.
+- **Reinforcement learning:** the traffic DQN's own held-out evaluation curve, and
+  its live action scores as steering, throttle and brake.
+- **Mission log and objectives,** including "harm no one".
+
+Safe routing measurably helps. On Chennai, seeds 2 and 3, with the brake off, road
+users hit fell from 4 and 3 to 0 and 0, and brake stops with it on from 10 and 1 to 0.
+Rescues were the same.
+
 **Chennai at district scale.** `configs/app_chennai.yaml`: 4 km x 4 km around Anna
 Nagar (`osm_chennai.yaml`), satellite imagery, and real Mapillary street photos for
 24% of the mission area's road tiles (6,847 photos). Chicago has 61% (21,507 photos).

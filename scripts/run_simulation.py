@@ -25,6 +25,7 @@ F drive view (follows the vehicle), V 3D, S satellite, P street photos,
 from __future__ import annotations
 
 import argparse
+import csv
 import math
 from dataclasses import replace
 from pathlib import Path
@@ -44,6 +45,7 @@ from sentry_ai.interfaces.navigation import ILocalController
 from sentry_ai.interfaces.perception import IDenoiser
 from sentry_ai.interfaces.world import IOccupancyGridSource
 from sentry_ai.navigation.astar import AStarPlanner
+from sentry_ai.navigation.route_advisor import RouteAdvisor, traffic_cost
 from sentry_ai.perception.grid_builder import OccupancyGridBuilder
 from sentry_ai.perception.grid_source import DetectedGridSource, ModelObserver
 from sentry_ai.perception.scene_evidence import OnboardEvidenceSource
@@ -51,6 +53,7 @@ from sentry_ai.rendering.simulation_app import (
     DEFAULT_SPEED,
     MAX_SPEED,
     MIN_SPEED,
+    DashboardInputs,
     MissionScene,
     SimulationApp,
     build_mode_switch,
@@ -110,6 +113,7 @@ def main() -> int:
             speed=args.speed,
             metres_per_tile=_metres_per_tile(map_data),
             cruise_kmh=_load_mission_configs(loader, app_config)[1].cruise_speed_kmh,
+            dashboard=_dashboard_inputs(loader, app_config, args, map_data),
         )
         app.run()
         # After restarts this is a different engine to the one we started
@@ -134,18 +138,23 @@ def _build_scene(
     grid_source = _build_grid_source(loader, app_config, args, city_map)
     lag = LaggedGridSource(grid_source, args.lag, max_lag=args.lag) if args.lag else None
     grid_source = lag or grid_source
+    traffic_config = simulation_config.traffic
+    traffic = TrafficProcess(traffic_config) if traffic_config.enabled else None
     mission = MissionController(
         city_map=city_map,
         grid=grid_source.grid_for(city_map, city_map.vehicle.position),
-        planner=AStarPlanner(simulation_config.planner),
+        # With traffic, the command center plans the safest route, not the
+        # shortest: busy streets cost more (navigation/route_advisor.py).
+        planner=AStarPlanner(
+            simulation_config.planner,
+            extra_cost=(lambda: traffic_cost(traffic.occupants())) if traffic else None,
+        ),
         config=simulation_config.mission,
         grid_source=grid_source,
     )
     driver = _build_driver(loader, args)
     camera = _build_onboard_camera(loader, app_config, args) if args.fusion_stack else None
     brain = _build_brain(loader, args, driver, camera, city_map, mission, lag) if camera else None
-    traffic_config = simulation_config.traffic
-    traffic = TrafficProcess(traffic_config) if traffic_config.enabled else None
     brake = EmergencyBrake(brain or driver, traffic.occupants) if traffic is not None else None
     mode_switch = build_mode_switch(brake or brain or driver)
     processes = build_world_processes(_hazards(simulation_config, args))
@@ -410,6 +419,9 @@ def _parse_args() -> argparse.Namespace:
 #: are compared in docs/architecture/phase7-fusion.md.
 FUSION_CONFIG = "configs/training/fusion_truth2.yaml"
 
+#: Stock COCO YOLOv8n, for the command center's real street photos.
+STREET_DETECTOR_WEIGHTS = "models/pretrained/yolov8n.pt"
+
 #: What ``--full`` fills in, for every flag the user left unset.
 _FULL_PRESET = {
     "dqn": "models/dqn/sentry/best.zip",
@@ -469,6 +481,54 @@ def _load_satellite(map_path: Path) -> pygame.Surface | None:
     """
     path = PROJECT_ROOT / "data" / "maps" / "satellite" / f"{map_path.stem}.png"
     return pygame.image.load(str(path)) if path.is_file() else None
+
+
+def _dashboard_inputs(
+    loader: ConfigLoader,
+    app_config: AppConfig,
+    args: argparse.Namespace,
+    map_data: dict[str, Any],
+) -> DashboardInputs | None:
+    """What the command-center layout needs, on imported maps with a real scale."""
+    metres = _metres_per_tile(map_data)
+    if metres is None:
+        return None
+    simulation_config, vehicle_config = _load_mission_configs(loader, app_config)
+    detector = None
+    weights = PROJECT_ROOT / STREET_DETECTOR_WEIGHTS
+    if weights.is_file():
+        from sentry_ai.perception.street_detector import StreetPhotoDetector  # noqa: PLC0415
+
+        detector = StreetPhotoDetector.from_weights(weights, _torch_device(args.device))
+    return DashboardInputs(
+        city_name=app_config.map_config_path.stem.removeprefix("osm_").replace("_", " ").title(),
+        route_advisor=RouteAdvisor(
+            simulation_config.planner, metres, vehicle_config.cruise_speed_kmh
+        ),
+        street_detector=detector,
+        rl_curve=_rl_curve(args.dqn),
+    )
+
+
+def _rl_curve(dqn: str | None) -> tuple[tuple[int, float, int], ...]:
+    """The DQN's held-out evaluations during training, from ``metrics.csv`` beside it."""
+    if dqn is None:
+        return ()
+    path = (PROJECT_ROOT / dqn).parent / "metrics.csv"
+    if not path.is_file():
+        return ()
+    with path.open(encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    return tuple(
+        (int(row["step"]), float(row["rescue_ratio"]), int(row["collisions"])) for row in rows
+    )
+
+
+def _torch_device(device: str) -> str:
+    """``cuda`` only when Torch can use it, so the 3060 and a CPU laptop both work."""
+    import torch  # noqa: PLC0415
+
+    return device if device != "cuda" or torch.cuda.is_available() else "cpu"
 
 
 def _metres_per_tile(map_data: dict[str, Any]) -> float | None:

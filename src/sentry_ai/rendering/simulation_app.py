@@ -32,6 +32,7 @@ Controls
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -43,9 +44,13 @@ from sentry_ai.decision.emergency_brake import EmergencyBrake
 from sentry_ai.decision.fused_controller import FusedLocalController
 from sentry_ai.domain.map import CityMap
 from sentry_ai.interfaces.navigation import ILocalController, LocalDecision, LocalObservation
+from sentry_ai.navigation.route_advisor import RouteAdvisor, RouteOption
 from sentry_ai.perception.scene_evidence import OnboardEvidenceSource
+from sentry_ai.perception.street_detector import StreetPhotoDetector
 from sentry_ai.rendering.ai_panel import AiPanelRenderer, MissionControlState
 from sentry_ai.rendering.camera_panel import CameraPanelRenderer
+from sentry_ai.rendering.command_center import SIZE as COMMAND_CENTER_SIZE
+from sentry_ai.rendering.command_center import CommandCenterRenderer, CommandCenterState
 from sentry_ai.rendering.drive_view import DriveStatus, DriveViewRenderer, TrafficView
 from sentry_ai.rendering.grid_overlay import GridOverlayRenderer
 from sentry_ai.rendering.hud import HudRenderer
@@ -87,6 +92,27 @@ DEFAULT_SPEED = 0.3
 #: world area, opens in the drive view, and shrinks the whole-map views to fit.
 _LARGE_MAP_TILES = 2_000
 _LARGE_WORLD_PX = (900, 640)
+
+#: Seconds between re-planning the command center's three candidate routes.
+_ROUTE_REFRESH_SECONDS = 2.0
+
+
+@dataclass(frozen=True)
+class DashboardInputs:
+    """What only the command-center layout needs, composed by the caller.
+
+    Attributes:
+        city_name: Shown on the map panel.
+        route_advisor: Plans and scores the three candidate routes.
+        street_detector: COCO YOLOv8 for the real street photos, or ``None``.
+        rl_curve: ``(step, rescue ratio, collisions)`` rows of the DQN's
+            held-out evaluations during training.
+    """
+
+    city_name: str
+    route_advisor: RouteAdvisor
+    street_detector: StreetPhotoDetector | None
+    rl_curve: tuple[tuple[int, float, int], ...]
 
 
 @dataclass(frozen=True)
@@ -157,6 +183,7 @@ class SimulationApp:
         speed: float = DEFAULT_SPEED,
         metres_per_tile: float | None = None,
         cruise_kmh: float | None = None,
+        dashboard: DashboardInputs | None = None,
     ) -> None:
         """Create the app.
 
@@ -192,6 +219,10 @@ class SimulationApp:
             cruise_kmh: Real-world speed a tile per tick stands for
                 (``VehicleConfig.cruise_speed_kmh``), for the drive view's
                 speed and replay-rate readout. Needs ``metres_per_tile``.
+            dashboard: What only the command-center layout needs (route
+                advisor, street-photo detector, RL curve, city name). With
+                it, a city-sized map opens in that layout
+                (:mod:`~sentry_ai.rendering.command_center`).
         """
         if not MIN_SPEED <= speed <= MAX_SPEED:
             raise ValueError(f"speed must be in [{MIN_SPEED}, {MAX_SPEED}], got {speed}")
@@ -220,6 +251,9 @@ class SimulationApp:
         self._show_drive = self._is_large
         self._metres_per_tile = metres_per_tile
         self._cruise_kmh = cruise_kmh
+        self._dashboard = dashboard
+        self._routes: list[RouteOption] = []
+        self._routes_age = math.inf
         self._satellite = satellite
         self._show_satellite = satellite is not None
         self._street = street
@@ -271,6 +305,9 @@ class SimulationApp:
         ai_panel: AiPanelRenderer,
     ) -> None:
         """The frame loop, split out so ``run`` stays a thin try/finally."""
+        if self._uses_command_center:
+            self._run_command_center(map_renderer)
+            return
         ai_width = ai_panel.width_px if self._has_brain else 0
         if self._street is not None:
             self._street_panel = StreetViewPanel(self._theme)
@@ -296,6 +333,84 @@ class SimulationApp:
             hud.draw(surface, self._engine.mission, self._city_map.vehicle)
             pygame.display.flip()
             clock.tick(self._render_config.target_fps)
+
+    @property
+    def _uses_command_center(self) -> bool:
+        return (
+            self._dashboard is not None
+            and self._is_large
+            and self._metres_per_tile is not None
+            and self._scene is not None
+        )
+
+    def _run_command_center(self, map_renderer: MapRenderer) -> None:
+        """The frame loop of the command-center layout (city-sized maps)."""
+        assert self._dashboard is not None
+        surface = pygame.display.set_mode(COMMAND_CENTER_SIZE)
+        pygame.display.set_caption(self._render_config.window_title)
+        renderer = CommandCenterRenderer(self._drive, self._dashboard.street_detector)
+        clock = pygame.time.Clock()
+        running = True
+        while running:
+            frame_seconds = clock.get_time() / 1000.0
+            running = self._handle_events()
+            self._advance(frame_seconds)
+            map_renderer.advance_animation(frame_seconds)
+            self._drive.advance_animation(frame_seconds)
+            self._frame_seconds = frame_seconds
+            renderer.draw(surface, self._command_center_state(frame_seconds))
+            pygame.display.flip()
+            clock.tick(self._render_config.target_fps)
+
+    def _command_center_state(self, frame_seconds: float) -> CommandCenterState:
+        """Gather this frame's dashboard state from the running mission."""
+        assert self._dashboard is not None and self._scene is not None
+        assert self._metres_per_tile is not None
+        step_seconds = self._engine.seconds_per_tick / self._time_scale
+        pose = self._glide.update(self._city_map.vehicle, frame_seconds, step_seconds)
+        self._glide_pose = pose
+        if self._sensor_rig is not None and self._ticks_since_capture >= _CAMERA_REFRESH_TICKS:
+            self._camera_frames = [self._sensor_rig.capture_onboard(self._city_map)]
+            self._ticks_since_capture = 0
+        self._refresh_routes(frame_seconds)
+        speed, factor = self._real_pace()
+        real_per_sim = (factor or 1.0) * step_seconds / self._engine.seconds_per_tick
+        mission = self._engine.mission
+        return CommandCenterState(
+            city_name=self._dashboard.city_name,
+            city_map=self._city_map,
+            mission=mission,
+            pose=pose,
+            metres_per_tile=self._metres_per_tile,
+            speed_kmh=speed or 0.0,
+            time_factor=factor or 1.0,
+            real_seconds=mission.stats.elapsed_seconds * real_per_sim,
+            real_per_sim_second=real_per_sim,
+            brain=self._scene.brain,
+            brake=self._scene.brake,
+            camera=self._scene.camera,
+            onboard_frame=self._camera_frames[-1] if self._camera_frames else None,
+            traffic=self._traffic_view(),
+            routes=self._routes,
+            collisions=self._engine.stats.collisions,
+            satellite=self._satellite if self._show_satellite else None,
+            street=self._street if self._show_street else None,
+            rl_curve=self._dashboard.rl_curve,
+        )
+
+    def _refresh_routes(self, frame_seconds: float) -> None:
+        """Re-plan the three candidate routes every couple of seconds."""
+        assert self._dashboard is not None
+        self._routes_age += frame_seconds
+        goal = self._engine.mission.route.goal
+        if goal is None or self._routes_age < _ROUTE_REFRESH_SECONDS:
+            return
+        self._routes_age = 0.0
+        traffic = self._scene.traffic if self._scene is not None else None
+        occupied = traffic.occupants().keys() if traffic is not None else ()
+        self._routes = self._dashboard.route_advisor.compare(
+            self._engine.mission.grid, self._city_map.vehicle.position, goal, occupied
+        )
 
     def _create_surface(
         self, hud_height_px: int, panel_width_px: int, ai_width_px: int = 0

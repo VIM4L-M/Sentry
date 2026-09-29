@@ -121,3 +121,38 @@ def test_cruise_speed_must_be_positive() -> None:
 
     with pytest.raises(ConfigValidationError):
         VehicleConfig(cruise_speed_kmh=0.0)
+
+
+def test_the_command_center_draws_a_running_city_mission(project_root: Path) -> None:
+    import sys
+
+    sys.path.insert(0, str(project_root / "scripts"))
+    import run_simulation as rs
+    from sentry_ai.rendering.command_center import SIZE, CommandCenterRenderer
+    from sentry_ai.rendering.simulation_app import SimulationApp
+    from sentry_ai.rendering.theme import Theme
+
+    pygame.init()
+    loader = ConfigLoader(project_root=project_root)
+    sys.argv = ["x", "--config", "configs/app_traffic.yaml", "--full", "--device", "cpu"]
+    args = rs._parse_args()
+    app_config = loader.load_app_config(args.config)
+    scene = rs._build_scene(loader, app_config, args)
+    map_data = dict(loader.load_yaml(app_config.map_config_path))
+    map_data["geo"] = {"south": 0.0, "west": 0.0, "north": 0.004, "east": 0.006}
+    app = SimulationApp(
+        city_map=scene.city_map,
+        engine=scene.engine,
+        render_config=app_config.render,
+        theme=Theme.from_config(loader, app_config.render.palette_config_path),
+        scene=scene,
+        metres_per_tile=20.0,
+        cruise_kmh=40.0,
+        dashboard=rs._dashboard_inputs(loader, app_config, args, map_data),
+    )
+    surface = pygame.Surface(SIZE)
+    renderer = CommandCenterRenderer(app._drive)
+    for _ in range(40):
+        app._advance(0.2)
+        renderer.draw(surface, app._command_center_state(0.2))
+    assert surface.get_at((800, 30))[:3] != (0, 0, 0)
