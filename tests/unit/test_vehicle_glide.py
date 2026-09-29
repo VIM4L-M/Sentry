@@ -70,3 +70,22 @@ def test_heading_angle_is_clockwise_from_north(vehicle: Vehicle) -> None:
     for heading, degrees in expected.items():
         vehicle.heading = heading
         assert math.degrees(heading_angle(vehicle)) == pytest.approx(degrees)
+
+
+def test_moving_is_true_only_while_gliding_between_tiles(vehicle: Vehicle) -> None:
+    glide = VehicleGlide()
+    glide.update(vehicle, 0.0, 0.2)
+    assert not glide.moving
+    vehicle.position = Position(6, 5)
+    glide.update(vehicle, 0.0, 0.2)
+    assert glide.moving
+    glide.update(vehicle, 0.3, 0.2)
+    assert not glide.moving
+
+
+def test_turning_on_the_spot_is_not_moving(vehicle: Vehicle) -> None:
+    glide = VehicleGlide()
+    glide.update(vehicle, 0.0, 0.2)
+    vehicle.heading = Heading.SOUTH
+    glide.update(vehicle, 0.0, 0.2)
+    assert not glide.moving

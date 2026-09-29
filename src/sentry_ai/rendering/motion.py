@@ -48,6 +48,14 @@ class VehicleGlide:
         self._elapsed = 0.0
         self._duration = 1.0
 
+    @property
+    def moving(self) -> bool:
+        """Whether the drawn vehicle is part way along a move between two tiles."""
+        if self._start is None or self._end is None:
+            return False
+        travelling = (self._start.x, self._start.y) != (self._end.x, self._end.y)
+        return travelling and self._elapsed < self._duration
+
     def reset(self) -> None:
         """Forget the motion in progress, so the next update snaps."""
         self._start = None

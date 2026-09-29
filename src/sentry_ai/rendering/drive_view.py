@@ -41,6 +41,7 @@ from sentry_ai.rendering.motion import VehiclePose
 _ASPHALT = Color(52, 55, 62)
 _KERB = Color(92, 97, 108)
 _LANE = Color(150, 154, 162)
+_LANE_ON_IMAGERY = Color(236, 226, 180)
 _BLOCK = Color(30, 33, 40)
 _BLOCK_EDGE = Color(44, 48, 58)
 _GROUND = Color(22, 24, 29)
@@ -65,6 +66,9 @@ _AUTO_TOP = Color(30, 30, 30)
 _BIKE = Color(200, 70, 70)
 _COW = Color(236, 232, 222)
 _TRACKED = Color(120, 230, 255)
+
+#: How far, in tiles, a vehicle sits left of the road's centre line.
+_LANE_OFFSET = 0.22
 
 #: Nearest tracked road users that get a distance tag.
 _TAGGED_ROAD_USERS = 3
@@ -100,6 +104,10 @@ class DriveStatus:
     goal: str
     #: ``None`` on maps with no real-world scale: distances are given in tiles.
     metres_per_tile: float | None
+    #: The vehicle's real-world speed right now, when the map has a real scale.
+    speed_kmh: float | None = None
+    #: How many times faster than real life the replay is running.
+    time_factor: float | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +149,12 @@ class TrafficView:
         t = min(1.0, max(0.0, (self.clock - agent.moved_at) / step))
         x = agent.previous.x + (agent.position.x - agent.previous.x) * t
         y = agent.previous.y + (agent.position.y - agent.previous.y) * t
+        if agent.kind.is_vehicle:
+            # Keep left, as Indian traffic drives: each vehicle sits in the
+            # left half of its road tile relative to where it is heading, so
+            # oncoming traffic passes on the other side of the centre line.
+            lx, ly = agent.heading.turn_left().delta
+            x, y = x + lx * _LANE_OFFSET, y + ly * _LANE_OFFSET
         return x + 0.5, y + 0.5
 
 
@@ -308,7 +322,10 @@ class DriveViewRenderer:
                 pygame.draw.rect(patch, _DAMAGE.as_tuple(), rect)
                 pygame.draw.line(patch, _BLOCK.as_tuple(), rect.topleft, rect.bottomright, 2)
             elif over_imagery:
-                continue  # the photo already shows the street; only damage is added
+                # The photo already shows the street; add only the lane line.
+                if terrain is TerrainType.ROAD:
+                    self._draw_centre_line(patch, city_map, position, rect)
+                continue
             elif terrain in _ROADS:
                 pygame.draw.rect(patch, _ASPHALT.as_tuple(), rect)
                 self._draw_road_marks(patch, city_map, position, rect)
@@ -317,6 +334,30 @@ class DriveViewRenderer:
                 pygame.draw.rect(patch, _BLOCK_EDGE.as_tuple(), rect, 1)
             elif terrain is TerrainType.TREE:
                 pygame.draw.circle(patch, _TREE.as_tuple(), rect.center, max(2, size // 3))
+
+    @staticmethod
+    def _draw_centre_line(
+        patch: pygame.Surface, city_map: CityMap, position: Position, rect: pygame.Rect
+    ) -> None:
+        """A dashed centre line on a straight road tile: the two lanes of keep-left traffic."""
+        east_west = _is_road(city_map, position.x + 1, position.y) and _is_road(
+            city_map, position.x - 1, position.y
+        )
+        north_south = _is_road(city_map, position.x, position.y + 1) and _is_road(
+            city_map, position.x, position.y - 1
+        )
+        dash = max(3, rect.width // 3)
+        colour = _LANE_ON_IMAGERY.as_tuple()
+        if east_west and not north_south:
+            pygame.draw.line(
+                patch, colour, (rect.centerx - dash // 2, rect.centery),
+                (rect.centerx + dash // 2, rect.centery), 2,
+            )  # fmt: skip
+        elif north_south and not east_west:
+            pygame.draw.line(
+                patch, colour, (rect.centerx, rect.centery - dash // 2),
+                (rect.centerx, rect.centery + dash // 2), 2,
+            )  # fmt: skip
 
     @staticmethod
     def _draw_road_marks(
@@ -570,7 +611,11 @@ class DriveViewRenderer:
             (small, status.phase, _TEXT),
             (small, f"{status.goal} · {distance}" if left_tiles else status.goal, _MUTED),
         ]
-        panel = pygame.Surface((300, 78), pygame.SRCALPHA)
+        if status.speed_kmh is not None:
+            pace = f" · replay {status.time_factor:.0f}x real time" if status.time_factor else ""
+            lines.append((small, f"{status.speed_kmh:.0f} km/h{pace}", _TEXT))
+        height = 16 + sum(font.get_height() + 2 for font, _, _ in lines)
+        panel = pygame.Surface((300, height), pygame.SRCALPHA)
         panel.fill((10, 12, 16, 190))
         surface.blit(panel, (area.left + 10, area.top + 10))
         y = area.top + 16

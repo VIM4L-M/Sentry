@@ -109,6 +109,7 @@ def main() -> int:
             street=StreetPhotoLibrary.for_map(PROJECT_ROOT, app_config.map_config_path, map_data),
             speed=args.speed,
             metres_per_tile=_metres_per_tile(map_data),
+            cruise_kmh=_load_mission_configs(loader, app_config)[1].cruise_speed_kmh,
         )
         app.run()
         # After restarts this is a different engine to the one we started

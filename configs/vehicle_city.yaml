@@ -17,3 +17,8 @@ collision_damage_percent: 5.0
 fire_damage_per_tick: 2.0
 
 sensor_range_tiles: 5.0
+
+# The real-world speed of one tile per tick: an ambulance with lights on in
+# city traffic. With 20 m tiles, a tick is 1.8 real seconds; the drive view
+# shows this speed and how many times faster than real life it plays.
+cruise_speed_kmh: 40.0

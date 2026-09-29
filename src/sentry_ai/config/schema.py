@@ -422,6 +422,11 @@ class VehicleConfig:
         sensor_range_tiles: How far the onboard sensors reach. Sets the
             horizon for the fire-proximity term in the local observation,
             and from Phase 3 the footprint of the onboard camera.
+        cruise_speed_kmh: The real-world speed one tile per tick stands for
+            (Phase 9 display). The simulation moves a tile per tick; on an
+            imported map with a real tile size this sets how many real
+            seconds a tick is, so the drive view can show true speed and how
+            much faster than real life the replay runs.
     """
 
     capacity: int = 2
@@ -429,8 +434,13 @@ class VehicleConfig:
     collision_damage_percent: float = 5.0
     fire_damage_per_tick: float = 2.0
     sensor_range_tiles: float = 5.0
+    cruise_speed_kmh: float = 40.0
 
     def __post_init__(self) -> None:
+        if self.cruise_speed_kmh <= 0.0:
+            raise ConfigValidationError(
+                f"vehicle.cruise_speed_kmh must be positive, got {self.cruise_speed_kmh}"
+            )
         if self.capacity < 1:
             raise ConfigValidationError(f"vehicle.capacity must be at least 1, got {self.capacity}")
         if self.sensor_range_tiles <= 0.0:

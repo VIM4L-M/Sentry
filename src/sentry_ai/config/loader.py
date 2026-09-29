@@ -487,6 +487,7 @@ class ConfigLoader:
             sensor_range_tiles=_as_float(
                 data, "sensor_range_tiles", VehicleConfig.sensor_range_tiles
             ),
+            cruise_speed_kmh=_as_float(data, "cruise_speed_kmh", VehicleConfig.cruise_speed_kmh),
         )
 
     def _optional_path(self, data: dict[str, Any], key: str) -> Path | None:

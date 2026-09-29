@@ -591,6 +591,14 @@ city demos run the traffic DQN with its own fusion model
 (`--fusion-config configs/training/fusion_veto_traffic.yaml`), retrained on that
 DQN's Q-values.
 
+**Real-world scale.** On imported maps a tile is 20 m and one tile per tick stands
+for an ambulance at 40 km/h in city traffic (`cruise_speed_kmh` in
+`vehicle_city.yaml`), so a tick is 1.8 real seconds. The drive view shows the real
+speed and how many times faster than real life the replay runs, about 5x at the
+default 0.3 speed. Vehicles keep left, as Indian traffic drives: each is drawn in the
+left lane of its direction of travel, with a dashed centre line on straight roads.
+Lanes are drawn, not simulated; the grid still holds one road user per tile.
+
 **Chennai at district scale.** `configs/app_chennai.yaml`: 4 km x 4 km around Anna
 Nagar (`osm_chennai.yaml`), satellite imagery, and real Mapillary street photos for
 24% of the mission area's road tiles (6,847 photos). Chicago has 61% (21,507 photos).

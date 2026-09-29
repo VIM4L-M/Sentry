@@ -92,3 +92,32 @@ def test_remaining_is_what_lies_ahead_of_the_vehicle() -> None:
     assert remaining(route, Position(0, 1)) == route.waypoints
     assert remaining(None, Position(0, 0)) == ()
     assert remaining(Route.unreachable(), Position(0, 0)) == ()
+
+
+def test_vehicles_keep_left_and_people_do_not() -> None:
+    from sentry_ai.domain.enums import Heading
+    from sentry_ai.domain.traffic import AgentKind, TrafficAgent
+    from sentry_ai.rendering.drive_view import TrafficView
+
+    here = Position(5, 5)
+    car = TrafficAgent("c", AgentKind.CAR, here, Heading.NORTH, here)
+    person = TrafficAgent("p", AgentKind.PEDESTRIAN, here, Heading.NORTH, here)
+    view = TrafficView(agents=(car, person), clock=10.0, step_ticks={k: 2 for k in AgentKind})
+    car_x, car_y = view.where(car)
+    assert car_x < 5.5 and car_y == pytest.approx(5.5)  # heading north, left is west
+    assert view.where(person) == (5.5, 5.5)
+
+
+def test_the_banner_shows_real_speed(city: CityMap) -> None:
+    pygame.init()
+    surface = pygame.Surface((640, 480))
+    status = DriveStatus("EN ROUTE", "to victim_01", 20.0, speed_kmh=40.0, time_factor=5.4)
+    DriveViewRenderer().draw(surface, surface.get_rect(), city, _pose(city), status=status)
+
+
+def test_cruise_speed_must_be_positive() -> None:
+    from sentry_ai.common.exceptions import ConfigValidationError
+    from sentry_ai.config.schema import VehicleConfig
+
+    with pytest.raises(ConfigValidationError):
+        VehicleConfig(cruise_speed_kmh=0.0)

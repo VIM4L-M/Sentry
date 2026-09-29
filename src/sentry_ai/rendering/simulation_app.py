@@ -156,6 +156,7 @@ class SimulationApp:
         street: StreetPhotoLibrary | None = None,
         speed: float = DEFAULT_SPEED,
         metres_per_tile: float | None = None,
+        cruise_kmh: float | None = None,
     ) -> None:
         """Create the app.
 
@@ -188,6 +189,9 @@ class SimulationApp:
                 motion so a viewer can follow each move.
             metres_per_tile: Real size of a tile on an imported map, for the
                 drive view's distances. ``None`` shows distances in tiles.
+            cruise_kmh: Real-world speed a tile per tick stands for
+                (``VehicleConfig.cruise_speed_kmh``), for the drive view's
+                speed and replay-rate readout. Needs ``metres_per_tile``.
         """
         if not MIN_SPEED <= speed <= MAX_SPEED:
             raise ValueError(f"speed must be in [{MIN_SPEED}, {MAX_SPEED}], got {speed}")
@@ -215,6 +219,7 @@ class SimulationApp:
         self._glide_pose = VehiclePose(0.0, 0.0, 0.0)
         self._show_drive = self._is_large
         self._metres_per_tile = metres_per_tile
+        self._cruise_kmh = cruise_kmh
         self._satellite = satellite
         self._show_satellite = satellite is not None
         self._street = street
@@ -354,10 +359,13 @@ class SimulationApp:
             ),
             None,
         )
+        speed, factor = self._real_pace()
         status = DriveStatus(
             phase=mission.phase.value.replace("_", " ").upper(),
             goal=f"to {victim}" if victim else "to the hospital" if goal else "holding",
             metres_per_tile=self._metres_per_tile,
+            speed_kmh=speed,
+            time_factor=factor,
         )
         self._drive.draw(
             surface,
@@ -370,6 +378,20 @@ class SimulationApp:
             status=status,
             traffic=self._traffic_view(),
         )
+
+    def _real_pace(self) -> tuple[float | None, float | None]:
+        """Real-world km/h right now, and how much faster than real life the replay runs.
+
+        A tile per tick stands for ``cruise_kmh`` on a map with a real tile
+        size, so one tick is ``metres_per_tile / cruise`` real seconds. The
+        window plays a tick every ``seconds_per_tick / speed`` wall seconds.
+        """
+        if self._metres_per_tile is None or self._cruise_kmh is None:
+            return None, None
+        real_seconds_per_tick = self._metres_per_tile / (self._cruise_kmh / 3.6)
+        wall_seconds_per_tick = self._engine.seconds_per_tick / self._time_scale
+        speed = self._cruise_kmh if self._glide.moving else 0.0
+        return speed, real_seconds_per_tick / wall_seconds_per_tick
 
     def _traffic_view(self) -> TrafficView | None:
         """The road users to draw, placed part way through the tick in progress."""
