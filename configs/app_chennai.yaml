@@ -1,0 +1,19 @@
+# A city-sized mission in Chennai: 4 km x 4 km around Anna Nagar, imported from
+# OpenStreetMap by scripts/import_osm_map.py, with Indian traffic — cars,
+# autorickshaws, two-wheelers, pedestrians and cattle sharing the streets.
+#   python scripts/run_simulation.py --config configs/app_chennai.yaml --full #       --fusion-config configs/training/fusion_veto_traffic.yaml
+# Paths below are relative to the project root.
+
+logging_config: "configs/logging.yaml"
+map_config: "configs/maps/osm_chennai.yaml"
+
+simulation_config: "configs/simulation_chennai.yaml"
+vehicle_config: "configs/vehicle_city.yaml"
+
+sensor_config: "configs/sensors.yaml"
+
+render:
+  window_title: "SENTRY AI — Chennai"
+  tile_size_px: 28
+  target_fps: 60
+  palette_config: "configs/render.yaml"

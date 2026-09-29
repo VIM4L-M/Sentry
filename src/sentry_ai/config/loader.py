@@ -349,9 +349,11 @@ class ConfigLoader:
                         "reverse",
                         "completion",
                         "failure",
+                        "road_user_hit",
                     )
                 }
             ),
+            traffic_features=_as_bool(data, "traffic_features", defaults.traffic_features),
         )
 
     def load_fusion_config(self, relative_path: PathLike) -> FusionTrainingConfig:
@@ -392,6 +394,7 @@ class ConfigLoader:
             weight_decay=_as_float(data, "weight_decay", d.weight_decay),
             patience=_as_int(data, "patience", d.patience),
             critical_weight=_as_float(data, "critical_weight", d.critical_weight),
+            label_mode=str(data.get("label_mode", d.label_mode)),
             override_threshold=_as_float(data, "override_threshold", d.override_threshold),
             report_hazards=_as_bool(data, "report_hazards", d.report_hazards),
             report_threshold=_as_float(data, "report_threshold", d.report_threshold),
@@ -426,6 +429,9 @@ class ConfigLoader:
             ),
             urgency_weight=_as_float(
                 mission_data, "urgency_weight", MissionConfig.urgency_weight
+            ),
+            block_confirm_refreshes=_as_int(
+                mission_data, "block_confirm_refreshes", MissionConfig.block_confirm_refreshes
             ),
         )
         planner = PlannerConfig(
@@ -578,6 +584,12 @@ def _traffic_config(data: dict[str, Any]) -> TrafficConfig:
         pedestrian_step_ticks=_as_int(data, "pedestrian_step_ticks", d.pedestrian_step_ticks),
         crossing_chance=_as_float(data, "crossing_chance", d.crossing_chance),
         seed=_as_int(data, "seed", d.seed),
+        autos=_as_int(data, "autos", d.autos),
+        two_wheelers=_as_int(data, "two_wheelers", d.two_wheelers),
+        cows=_as_int(data, "cows", d.cows),
+        auto_step_ticks=_as_int(data, "auto_step_ticks", d.auto_step_ticks),
+        two_wheeler_step_ticks=_as_int(data, "two_wheeler_step_ticks", d.two_wheeler_step_ticks),
+        cow_step_ticks=_as_int(data, "cow_step_ticks", d.cow_step_ticks),
     )
 
 

@@ -164,3 +164,41 @@ class TestTrafficConfig:
     def test_default_config_has_no_traffic(self, project_root: Path) -> None:
         loader = ConfigLoader(project_root=project_root)
         assert not loader.load_simulation_config("configs/simulation.yaml").traffic.enabled
+
+
+class TestIndianTraffic:
+    CONFIG = TrafficConfig(
+        enabled=True, cars=3, pedestrians=4, autos=3, two_wheelers=3, cows=3, seed=11
+    )
+
+    def test_every_kind_is_spawned(self, city: CityMap) -> None:
+        _run(city, 1, self.CONFIG)
+        kinds = [agent.kind for agent in city.traffic]
+        for kind, count in (
+            (AgentKind.CAR, 3),
+            (AgentKind.AUTO_RICKSHAW, 3),
+            (AgentKind.TWO_WHEELER, 3),
+            (AgentKind.PEDESTRIAN, 4),
+            (AgentKind.COW, 3),
+        ):
+            assert kinds.count(kind) == count
+
+    def test_vehicles_stay_on_the_road_and_cattle_on_walkable_ground(self, city: CityMap) -> None:
+        process = TrafficProcess(self.CONFIG)
+        for _ in range(60):
+            process.advance(city, 0.1)
+            for agent in city.traffic:
+                terrain = city.tile_at(agent.position)
+                if agent.kind.is_vehicle:
+                    assert terrain is TerrainType.ROAD
+                else:
+                    assert terrain in (TerrainType.ROAD, TerrainType.OPEN_GROUND)
+
+    def test_without_indian_kinds_the_old_traffic_is_unchanged(self, city: CityMap) -> None:
+        _run(city, 1)
+        assert {agent.kind for agent in city.traffic} == {AgentKind.CAR, AgentKind.PEDESTRIAN}
+
+    def test_each_kind_has_its_own_pace(self) -> None:
+        paces = TrafficProcess(self.CONFIG).step_ticks_by_kind()
+        assert paces[AgentKind.COW] > paces[AgentKind.AUTO_RICKSHAW] > paces[AgentKind.CAR]
+        assert set(paces) == set(AgentKind)

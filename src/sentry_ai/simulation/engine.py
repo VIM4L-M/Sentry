@@ -14,7 +14,7 @@ changes a composition root, not this file.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from sentry_ai.common.logging_config import get_logger
@@ -29,6 +29,9 @@ from sentry_ai.simulation.mission import MissionController, MissionPhase, Missio
 from sentry_ai.simulation.vehicle_controller import MoveOutcome, VehicleController
 
 logger = get_logger(__name__)
+
+#: The tiles road users stand on, as the vehicle's sensors report them.
+RoadUserSensor = Callable[[], Mapping[tuple[int, int], object]]
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,7 @@ class SimulationEngine:
         vehicle_config: VehicleConfig,
         world_processes: Sequence[IWorldProcess] = (),
         physics_source: IOccupancyGridSource | None = None,
+        road_users: RoadUserSensor | None = None,
     ) -> None:
         """Wire the engine to a world, a mission, and a driver.
 
@@ -82,6 +86,9 @@ class SimulationEngine:
                 map, which is exact while that map is ground truth. Pass a
                 ground-truth source when the belief can lag or err (Phase 7)
                 — debris the map has not heard of must still stop a vehicle.
+            road_users: The vehicle's own sensors for cars and pedestrians
+                (Phase 9): the tiles they stand on. Fills the observation's
+                ``road_user_ahead`` inputs; ``None`` where there is no traffic.
         """
         self._city_map = city_map
         self._mission = mission
@@ -91,6 +98,7 @@ class SimulationEngine:
         self._vehicle_controller = VehicleController(vehicle_config)
         self._world_processes = tuple(world_processes)
         self._physics_source = physics_source
+        self._road_users = road_users
         self._tick_index = 0
 
         city_map.vehicle.battery_percent = vehicle_config.battery.initial_percent
@@ -213,6 +221,7 @@ class SimulationEngine:
         if not blocked:
             blocked = not grid.is_traversable(Position(ahead_x, ahead_y))
 
+        occupied = self._road_users() if self._road_users is not None else {}
         return LocalObservation(
             position=vehicle.position,
             heading=vehicle.heading,
@@ -220,6 +229,8 @@ class SimulationEngine:
             next_waypoint=waypoint,
             blocked_ahead=blocked,
             fire_proximity=self._fire_proximity(vehicle.position, grid),
+            road_user_ahead=(ahead_x, ahead_y) in occupied,
+            road_user_ahead_far=(ahead_x + dx, ahead_y + dy) in occupied,
         )
 
     def _fire_proximity(self, position: Position, grid: OccupancyGrid) -> float:

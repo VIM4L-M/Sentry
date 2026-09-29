@@ -1,0 +1,22 @@
+# The shipped city with cars and pedestrians, for training the traffic-aware DQN:
+#   python scripts/train_dqn.py --config configs/training/dqn_traffic.yaml --app-config configs/app_traffic.yaml --name traffic
+# Root application configuration — composes every other config file.
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_app_config().
+# Paths below are relative to the project root.
+
+logging_config: "configs/logging.yaml"
+map_config: "configs/maps/city_default.yaml"
+
+# Mission-time configs. Optional: scripts/run_preview.py never reads them,
+# scripts/run_simulation.py requires them.
+simulation_config: "configs/simulation_traffic.yaml"
+vehicle_config: "configs/vehicle.yaml"
+
+# Camera network. Optional: only scripts that capture frames read it.
+sensor_config: "configs/sensors.yaml"
+
+render:
+  window_title: "SENTRY AI — Disaster City Preview"
+  tile_size_px: 28
+  target_fps: 60
+  palette_config: "configs/render.yaml"

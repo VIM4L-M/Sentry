@@ -948,6 +948,17 @@ importer** (`scripts/import_osm_map.py`, real streets as a disaster city), an
 order. All imagery is display only; the models see the simulated city. Not done: CI and
 packaging.
 
+Added after that, toward an Indian autonomous ambulance:
+- **District-scale cities.** Chennai (Anna Nagar) and Chicago, 4 km x 4 km at 20 m
+  tiles, with a Tesla-style **drive view** (`F`).
+- **Traffic.** Cars, autorickshaws, two-wheelers, pedestrians and cows, with four
+  surround cameras and a rule-based emergency brake (`6`).
+- **A DQN retrained among traffic** with a road-user penalty. On 40 held-out
+  missions it hit 4 road users where the untrained DQN hit 361, with the same
+  rescues.
+- **Phase 7 round 2**, adopting the teammate's route re-check, a DQN-trained LSTM
+  and the veto label (see docs/architecture/phase7-fusion.md).
+
 ### Phase 10 — Future Improvements (see §18)
 
 ---

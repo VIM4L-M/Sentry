@@ -210,7 +210,11 @@ class DqnTrainer:
         run_dir = config.runs_dir / run_name
         env: Any = Monitor(
             SentryEnv(
-                self._factory, config.training_seeds, config.reward, config.max_episode_steps
+                self._factory,
+                config.training_seeds,
+                config.reward,
+                config.max_episode_steps,
+                traffic_features=config.traffic_features,
             )
         )
         model = DQN(

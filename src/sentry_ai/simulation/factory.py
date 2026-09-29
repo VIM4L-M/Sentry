@@ -24,6 +24,7 @@ from sentry_ai.simulation.engine import SimulationEngine
 from sentry_ai.simulation.grid_source import GroundTruthGridSource
 from sentry_ai.simulation.hazards import build_world_processes
 from sentry_ai.simulation.mission import MissionController
+from sentry_ai.simulation.traffic import TrafficAwarePhysics, TrafficProcess
 from sentry_ai.simulation.waypoint_follower import WaypointFollower
 
 
@@ -38,6 +39,7 @@ class Mission:
 
     city_map: CityMap
     engine: SimulationEngine
+    traffic: TrafficProcess | None = None
 
     @property
     def controller(self) -> MissionController:
@@ -94,6 +96,14 @@ def build_mission(
         hazards = replace(hazards, seed=hazard_seed)
 
     source = grid_source if grid_source is not None else GroundTruthGridSource()
+    processes = build_world_processes(hazards)
+    traffic = None
+    if simulation_config.traffic.enabled:
+        # Road users: a world process, solid to the vehicle's physics, and
+        # seen by its sensors — never on the command center's map.
+        traffic = TrafficProcess(simulation_config.traffic)
+        processes.append(traffic)
+        physics_source = TrafficAwarePhysics(physics_source or GroundTruthGridSource(), traffic)
     mission = MissionController(
         city_map=city_map,
         # The mission refreshes this on its first tick; seeding it from the
@@ -110,7 +120,8 @@ def build_mission(
         controller=controller if controller is not None else WaypointFollower(),
         simulation_config=simulation_config,
         vehicle_config=vehicle_config,
-        world_processes=build_world_processes(hazards),
+        world_processes=processes,
         physics_source=physics_source,
+        road_users=traffic.occupants if traffic is not None else None,
     )
-    return Mission(city_map=city_map, engine=engine)
+    return Mission(city_map=city_map, engine=engine, traffic=traffic)

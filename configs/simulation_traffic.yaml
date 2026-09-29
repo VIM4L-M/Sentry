@@ -1,3 +1,5 @@
+# The shipped simulation rules plus other road users, for training and
+# evaluating a DQN that shares the streets (configs/app_traffic.yaml).
 # Tick-based simulation engine and command-center rules.
 # Loaded by sentry_ai.config.loader.ConfigLoader.load_simulation_config().
 # Every key is optional — an omitted key uses the dataclass default in
@@ -84,3 +86,14 @@ hazards:
     collapse_chance: 0.5
     # Per-mission budget, so the city always stays navigable.
     max_collapses: 6
+
+# Road users on the 30x20 map: enough that the vehicle meets them on most
+# routes, few enough that streets stay passable.
+traffic:
+  enabled: true
+  cars: 10
+  pedestrians: 14
+  car_step_ticks: 2
+  pedestrian_step_ticks: 4
+  crossing_chance: 0.15
+  seed: 20250928

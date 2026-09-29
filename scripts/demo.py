@@ -88,7 +88,7 @@ SCENES: tuple[Scene, ...] = (
             "Press 3 again: fusion reads the camera and overrides the DQN (OVERRIDE flash).",
             "1 camera, 2 LSTM, 4 denoiser, 5 DQN: switch any model off live.",
         ),
-        ("models/dqn/sentry/best.zip", "models/fusion/sentry/best.pt"),
+        ("models/dqn/sentry/best.zip", "models/fusion/truth2/best.pt"),
     ),
     Scene(
         "Anna Nagar, Chennai: satellite ground and real street photos",
@@ -103,19 +103,49 @@ SCENES: tuple[Scene, ...] = (
         ("configs/maps/osm_annanagar.yaml", "models/dqn/sentry/best.zip"),
     ),
     Scene(
+        "Chennai, 4 km of Anna Nagar: an Indian autonomous ambulance",
+        (
+            "--config",
+            "configs/app_chennai.yaml",
+            "--full",
+            "--hazard-seed",
+            "2",
+            "--fusion-config",
+            "configs/training/fusion_veto_traffic.yaml",
+        ),
+        (
+            "4 x 4 km of Chennai around Anna Nagar from OpenStreetMap, on satellite imagery.",
+            "Indian traffic: cars, autorickshaws, two-wheelers, pedestrians and cows.",
+            "The DQN was retrained among traffic with a heavy penalty for hitting anyone:",
+            "on 40 held-out missions it hit 4 road users where the old one hit 361, same rescues.",
+            "Left column: four surround cameras. Right: a real Mapillary photo of the street (P).",
+            "The emergency brake is a backup now; the driver itself gives way.",
+            "F whole map / drive view, S satellite, [ slower, ] faster.",
+        ),
+        ("configs/maps/osm_chennai.yaml", "models/dqn/traffic/best.zip"),
+    ),
+    Scene(
         "Chicago, 4 km of city: the autopilot view",
-        ("--config", "configs/app_city.yaml", "--full", "--hazard-seed", "2"),
+        (
+            "--config",
+            "configs/app_city.yaml",
+            "--full",
+            "--hazard-seed",
+            "2",
+            "--fusion-config",
+            "configs/training/fusion_veto_traffic.yaml",
+        ),
         (
             "4 x 4 km of Chicago's West Side from OpenStreetMap: 40,000 tiles, 6 victims.",
             "The camera follows the vehicle and the map turns with it, like a Tesla display.",
             "Blue ribbon: the A* route. Brackets: what the onboard model detects right now.",
-            "The DQN drives with 7 egocentric numbers, so a city 67x bigger needs no retraining.",
+            "The DQN drives with 9 egocentric numbers, so a city 67x bigger needs no retraining.",
             "350 cars and 450 pedestrians share the streets. Left column: four surround cameras.",
             "Red EMERGENCY BRAKE: the safety layer stopped for a car or a person.",
-            "Press 6 to switch the brake off: watch the hit counter climb. 6 again to restore.",
-            "F whole map / drive view, S satellite, [ slower, ] faster.",
+            "Press 6 to switch the brake off: the traffic-trained DQN still gives way.",
+            "F whole map / drive view, S satellite, P street photos, [ slower, ] faster.",
         ),
-        ("configs/maps/osm_chicago.yaml", "models/dqn/sentry/best.zip"),
+        ("configs/maps/osm_chicago.yaml", "models/dqn/traffic/best.zip"),
     ),
     Scene(
         "Our own streets: the college area from OpenStreetMap, in 3D",
@@ -179,8 +209,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--speed",
         type=float,
-        default=0.5,
-        help="Simulation speed for every scene; 0.5 plays slowly enough to follow (default).",
+        default=0.3,
+        help="Simulation speed for every scene; 0.3 = three moves a second (default).",
     )
     return parser.parse_args()
 

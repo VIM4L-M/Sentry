@@ -51,6 +51,11 @@ logger = get_logger(__name__)
 #: Length of :func:`policy_features`' output.
 POLICY_FEATURES = 7
 
+#: Length with the two traffic inputs appended (``traffic=True``): a road user
+#: on the tile ahead, and one two tiles ahead. A traffic-trained DQN is
+#: recognised by its observation size, so older 7-input models keep working.
+TRAFFIC_POLICY_FEATURES = POLICY_FEATURES + 2
+
 #: Waypoint offsets are clipped to this many tiles and scaled to -1..1. A
 #: route advances tile by tile, so the waypoint is normally one tile away;
 #: three leaves room to see it after a detour without letting a far
@@ -58,8 +63,23 @@ POLICY_FEATURES = 7
 _WAYPOINT_REACH = 3.0
 
 
-def policy_features(observation: LocalObservation) -> NDArray[np.float32]:
-    """The egocentric vector the policy acts on; see the module docstring."""
+def policy_features(observation: LocalObservation, traffic: bool = False) -> NDArray[np.float32]:
+    """The egocentric vector the policy acts on; see the module docstring.
+
+    ``traffic`` appends ``road_user_ahead`` and ``road_user_ahead_far``, the
+    inputs of a DQN trained among cars and pedestrians.
+    """
+    base = _base_features(observation)
+    if not traffic:
+        return base
+    extra = np.array(
+        [float(observation.road_user_ahead), float(observation.road_user_ahead_far)],
+        dtype=np.float32,
+    )
+    return np.concatenate([base, extra])
+
+
+def _base_features(observation: LocalObservation) -> NDArray[np.float32]:
     heading_x, heading_y = observation.heading.delta
     waypoint = observation.next_waypoint
     if waypoint is None:
@@ -107,6 +127,15 @@ class DqnLocalController(ILocalController):
                 importing this module does not import SB3.
         """
         self._model = model
+        shape: tuple[int, ...] = tuple(
+            getattr(getattr(model, "observation_space", None), "shape", None) or ()
+        )
+        self._traffic = shape == (TRAFFIC_POLICY_FEATURES,)
+
+    @property
+    def sees_traffic(self) -> bool:
+        """Whether this model was trained with the two road-user inputs."""
+        return self._traffic
 
     @classmethod
     def from_file(cls, weights_path: Path, device: str = "cpu") -> DqnLocalController:
@@ -141,7 +170,8 @@ class DqnLocalController(ILocalController):
         """The network's value estimate for each action, in :data:`LOCAL_ACTION_ORDER`."""
         import torch  # noqa: PLC0415 - SB3 already requires it
 
-        tensor, _ = self._model.policy.obs_to_tensor(policy_features(observation))
+        features = policy_features(observation, traffic=self._traffic)
+        tensor, _ = self._model.policy.obs_to_tensor(features)
         with torch.no_grad():
             values = self._model.q_net(tensor)
         return [float(value) for value in values.squeeze(0).cpu().tolist()]

@@ -1,3 +1,5 @@
+# Simulation rules for the Chennai district (configs/app_chennai.yaml): the
+# city rules of configs/simulation_city.yaml with Indian traffic.
 # Simulation rules for city-sized maps (configs/app_city.yaml). The same
 # engine and hazards as configs/simulation.yaml, retuned for a district
 # where a victim can be a kilometre away: victims hold out longer and the
@@ -42,13 +44,18 @@ hazards:
     collapse_chance: 0.5
     max_collapses: 20
 
-# Other road users. Not on the command center's map and never seen in
-# training: only the vehicle's surround sensors and its emergency brake
-# (key 6) keep it from hitting them.
+# Indian traffic: the unstructured road the India Driving Dataset (IIIT
+# Hyderabad) documents, where cars, autorickshaws, two-wheelers, people and
+# cattle all share one street. Not on the command center's map; the
+# traffic-aware DQN, the surround sensors and the emergency brake (key 6)
+# keep the vehicle from hitting anyone.
 traffic:
   enabled: true
-  cars: 350
+  cars: 150
+  autos: 150
+  two_wheelers: 250
   pedestrians: 450
+  cows: 60
   # The rescue vehicle moves every tick; cars every 2nd, people every 4th.
   car_step_ticks: 2
   pedestrian_step_ticks: 4

@@ -25,7 +25,6 @@ from sentry_ai.common.color import Color
 from sentry_ai.decision.emergency_brake import EmergencyBrake
 from sentry_ai.decision.fused_controller import FusedLocalController, FusionTrace
 from sentry_ai.domain.enums import EntityKind
-from sentry_ai.domain.traffic import AgentKind
 from sentry_ai.interfaces.decision import EVIDENCE_KINDS, EVIDENCE_REGIONS
 from sentry_ai.interfaces.navigation import LOCAL_ACTION_ORDER
 from sentry_ai.perception.scene_evidence import OnboardEvidenceSource
@@ -225,7 +224,9 @@ class AiPanelRenderer:
         stops = sum(brake.brakes.values())
         hits = brake.hits
         self._text(surface, f"brakes {stops}", x, y)
-        struck = f"hit {hits[AgentKind.CAR]} car · {hits[AgentKind.PEDESTRIAN]} people"
+        vehicles = sum(n for kind, n in hits.items() if kind.is_vehicle)
+        others = sum(n for kind, n in hits.items() if not kind.is_vehicle)
+        struck = f"hits {vehicles + others} ({others} on foot)"
         color = self._theme.hud.warning if sum(hits.values()) else None
         self._text(surface, struck, x + 100, y, color)
 

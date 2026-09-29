@@ -416,7 +416,7 @@ live, every input to the vehicle's decision:
 | `V` | top-down / isometric 3D view |
 | `F` | drive view: follows the vehicle, map turns with it (city-sized maps open in it) |
 | `6` | emergency brake for cars and pedestrians (maps with traffic) |
-| `[` / `]` | halve / double the simulation speed (0.25x to 2x) |
+| `[` / `]` | halve / double the simulation speed (0.1x to 2x) |
 | `S` | satellite imagery / drawn map (imported maps) |
 | `P` | street-photo column (maps with photos fetched) |
 
@@ -498,7 +498,7 @@ and swings through its turns, like a car in a game, instead of hopping
 every model still move tile by tile.
 
 `--speed 0.5` plays the mission in slow motion, and `[` / `]` change the speed live
-(0.25x to 2x). The demo runs every scene at 0.5x. Speed changes only how fast ticks
+(0.1x to 2x). The window and the demo start at 0.3x, three moves a second. Speed changes only how fast ticks
 happen, never what a tick does, so results are identical at any speed.
 
 **A whole district: Chicago and the drive view.** The importer is not limited to
@@ -534,37 +534,68 @@ key `F`), laid out like a car's autopilot display:
 - a banner shows the mission phase, the goal and the distance left;
 - a minimap in the corner shows the whole city.
 
-**Traffic, pedestrians and the emergency brake.** The city config adds 350 cars
-and 450 pedestrians (`traffic:` in `simulation_city.yaml`, `simulation/traffic.py`).
-Cars drive the roads, going straight and turning at junctions; pedestrians walk
-the pavements and sometimes step out to cross. All of them give way to the
-rescue vehicle's own tile, and a blocked car turns or backs away, so traffic
-never deadlocks. They are not on the command center's map and no model was
-trained with them. What stands between the vehicle and a collision is:
+**Traffic, pedestrians and the emergency brake.** City configs add road users
+(`traffic:` in the simulation config, `simulation/traffic.py`). Chicago has 350 cars
+and 450 pedestrians. **Chennai has Indian traffic** (`simulation_chennai.yaml`):
+150 cars, 150 autorickshaws, 250 two-wheelers, 450 pedestrians and 60 cows. That is
+the unstructured road the [India Driving Dataset](https://idd.insaan.iiit.ac.in/)
+(IIIT Hyderabad) documents, where every kind of road user shares one street.
+- Vehicles drive the roads, going straight and turning at junctions, each kind at
+  its own pace.
+- Pedestrians walk the pavements and sometimes step out to cross; cows wander the
+  road and the verge.
+- Every road user gives way to the rescue vehicle's own tile. One boxed in beside
+  it steps onto the pavement or leaves the street, so traffic never deadlocks.
+- Road users are never on the command center's map.
+
+Three layers keep the ambulance from hurting anyone:
+- **A driver trained among traffic** (reinforcement learning, Unit V). The DQN was
+  retrained with two more inputs, a road user on the tile ahead and two tiles ahead,
+  and a reward that makes hitting any car or person cost as much as failing the
+  whole mission (`road_user_hit: -10`). It learned to slow down, wait and give way
+  from the reward alone (`configs/training/dqn_traffic.yaml`, `models/dqn/traffic`).
 - **Surround sensors.** Four cameras, front, left, right and rear, in the column
   beside the drive view (`rendering/surround_cameras.py`). Each one turns with the
-  vehicle and counts the cars and people in its quarter. Road users within 5
+  vehicle and counts the vehicles and people in its quarter. Road users within 5
   tiles are outlined, and the nearest three are tagged with their distance.
 - **The emergency brake** (`decision/emergency_brake.py`, key `6`). A rule-based
-  safety layer around whatever controller is driving, the same split a real car
-  makes between its learned planner and its AEB. If the next move would enter a
-  car's or a person's tile, it stops instead and waits. A red "EMERGENCY BRAKE"
-  banner shows who it stopped for. The AI panel counts brakes, and the hits made
-  while the brake was off.
+  safety layer around whatever controller drives, the same split a real car makes
+  between its learned planner and its AEB. If the next move would enter a road
+  user's tile, it stops instead. A red "EMERGENCY BRAKE" banner shows who for. The
+  AI panel counts brakes, and the hits made while the brake was off.
 
 Driving into a road user is a collision like driving into debris
-(`TrafficAwarePhysics`). Chicago, full stack, whole missions:
+(`TrafficAwarePhysics`). **What the reinforcement learning did**, on 40 held-out
+missions on the standard map with 10 cars and 14 pedestrians, brake off:
 
-| Hazard seed | Brake | Hit (cars, people) | Collisions | Rescued | Mission |
-|---|---|---|---|---|---|
-| 2 | on | 0, 0 (80 brakes) | 1 | 5 of 6 | completed |
-| 2 | off | 16, 3 | 20 | 2 | failed: vehicle destroyed |
-| 3 | on | 0, 0 (68 brakes) | 2 | 3 of 6 | completed |
-| 3 | off | 7, 9 | 18 | 2 | failed: vehicle destroyed |
+| Driver | Rescued | Completed | Road users hit |
+|---|---|---|---|
+| Rule-based waypoint follower | 128 | 31/40 | 423 |
+| DQN without traffic training | 146 | 39/40 | 361 |
+| **DQN trained among traffic** | **147** | **40/40** | **4** |
 
-The collisions left with the brake on are debris, not road users.
+Hits fell by 99% with no rescues lost. Whole city missions, full stack:
 
-Measured headless with the full stack before traffic was added, 5 hazard seeds:
+| City, hazard seed | Driver | Rescued | Brake stops | Road users hit |
+|---|---|---|---|---|
+| Chennai, 2 | old DQN + brake | 5 of 6 | 74 | 0 |
+| Chennai, 2 | **traffic DQN + brake** | 5 of 6 | **10** | 0 |
+| Chennai, 2 | traffic DQN, brake off | 5 of 6 | 0 | 4 |
+| Chennai, 3 | old DQN + brake | 4 of 6 | 56 | 0 |
+| Chennai, 3 | **traffic DQN + brake** | 4 of 6 | **1** | 0 |
+| Chicago, 2 | old DQN + brake | 4 of 6 | 92 | 0 |
+| Chicago, 2 | **traffic DQN, brake off** | 4 of 6 | 0 | **0** |
+
+With the trained driver the brake is a backup, not the thing doing the work. The
+city demos run the traffic DQN with its own fusion model
+(`--fusion-config configs/training/fusion_veto_traffic.yaml`), retrained on that
+DQN's Q-values.
+
+**Chennai at district scale.** `configs/app_chennai.yaml`: 4 km x 4 km around Anna
+Nagar (`osm_chennai.yaml`), satellite imagery, and real Mapillary street photos for
+24% of the mission area's road tiles (6,847 photos). Chicago has 61% (21,507 photos).
+
+Chicago measured headless with the full stack before traffic was added, 5 hazard seeds:
 every mission completed, 4-5 of 6 rescued, 0 collisions. Three changes made the
 size practical:
 - the occupancy grid's terrain layer is cached until the city changes

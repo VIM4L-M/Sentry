@@ -41,6 +41,13 @@ _WALK_GROUND = frozenset({TerrainType.OPEN_GROUND, TerrainType.ROAD})
 #: A car blocked for this many attempts will turn or back away.
 _PATIENCE = 3
 
+#: An agent blocked this many attempts right beside the rescue vehicle gives
+#: way (see ``TrafficProcess._give_way``).
+_GIVE_WAY = 6
+
+#: How far from the vehicle an agent that left the street rejoins traffic.
+_REJOIN_DISTANCE = 15
+
 #: Chance a car at a junction turns rather than going straight.
 _TURN_CHANCE = 0.3
 
@@ -53,7 +60,7 @@ Tile = tuple[int, int]
 
 
 class TrafficProcess(IWorldProcess):
-    """Spawns and moves the city's cars and pedestrians."""
+    """Spawns and moves the city's road users."""
 
     def __init__(self, config: TrafficConfig) -> None:
         """Create the process; agents are spawned on the first :meth:`advance`."""
@@ -62,6 +69,7 @@ class TrafficProcess(IWorldProcess):
         self._clock = 0
         self._spawned = False
         self._occupied: dict[Tile, TrafficAgent] = {}
+        self._roads: list[Position] = []
 
     @property
     def clock(self) -> int:
@@ -75,9 +83,18 @@ class TrafficProcess(IWorldProcess):
 
     def step_ticks(self, agent: TrafficAgent) -> int:
         """How many ticks one move of ``agent`` spans, for drawing it gliding."""
-        if agent.kind is AgentKind.CAR:
-            return self._config.car_step_ticks
-        return self._config.pedestrian_step_ticks
+        return self.step_ticks_by_kind()[agent.kind]
+
+    def step_ticks_by_kind(self) -> dict[AgentKind, int]:
+        """Ticks per move for every kind of road user."""
+        config = self._config
+        return {
+            AgentKind.CAR: config.car_step_ticks,
+            AgentKind.AUTO_RICKSHAW: config.auto_step_ticks,
+            AgentKind.TWO_WHEELER: config.two_wheeler_step_ticks,
+            AgentKind.PEDESTRIAN: config.pedestrian_step_ticks,
+            AgentKind.COW: config.cow_step_ticks,
+        }
 
     def occupants(self) -> dict[Tile, AgentKind]:
         """Every tile a road user stands on, and what stands there."""
@@ -103,9 +120,8 @@ class TrafficProcess(IWorldProcess):
     def _spawn(self, city_map: CityMap) -> None:
         self._spawned = True
         start = city_map.vehicle.position
-        roads = [
-            p for p in _tiles(city_map, _CAR_GROUND) if p.distance_to(start) > _SPAWN_CLEARANCE
-        ]
+        self._roads = _tiles(city_map, _CAR_GROUND)
+        roads = [p for p in self._roads if p.distance_to(start) > _SPAWN_CLEARANCE]
         pavement = [
             p
             for p in _tiles(city_map, frozenset({TerrainType.OPEN_GROUND}))
@@ -119,11 +135,36 @@ class TrafficProcess(IWorldProcess):
         walkers = [p for p in pavement if p.as_tuple() not in taken]
         for index, position in enumerate(walkers[: self._config.pedestrians]):
             self._add(city_map, f"person_{index:03d}", AgentKind.PEDESTRIAN, position)
+        self._spawn_indian_traffic(city_map, roads[self._config.cars :], walkers)
+        counts = {kind: 0 for kind in AgentKind}
+        for agent in city_map.traffic:
+            counts[agent.kind] += 1
         logger.info(
-            "Traffic: %d cars, %d pedestrians",
-            sum(a.kind is AgentKind.CAR for a in city_map.traffic),
-            sum(a.kind is AgentKind.PEDESTRIAN for a in city_map.traffic),
+            "Traffic: %s", ", ".join(f"{n} {kind.value}" for kind, n in counts.items() if n)
         )
+
+    def _spawn_indian_traffic(
+        self, city_map: CityMap, free_roads: list[Position], walkers: list[Position]
+    ) -> None:
+        """Autorickshaws, two-wheelers and cattle, on tiles no one else took.
+
+        Drawn from the already-shuffled lists after the cars and pedestrians,
+        so a config without them spawns exactly what it did before.
+        """
+        taken = {agent.position.as_tuple() for agent in city_map.traffic}
+        roads = [p for p in free_roads if p.as_tuple() not in taken]
+        config = self._config
+        for kind, count, prefix in (
+            (AgentKind.AUTO_RICKSHAW, config.autos, "auto"),
+            (AgentKind.TWO_WHEELER, config.two_wheelers, "bike"),
+        ):
+            for index, position in enumerate(roads[:count]):
+                self._add(city_map, f"{prefix}_{index:03d}", kind, position)
+            roads = roads[count:]
+        grazing = roads + [p for p in walkers if p.as_tuple() not in self._occupied]
+        for index, position in enumerate(grazing[: config.cows]):
+            if position.as_tuple() not in self._occupied:
+                self._add(city_map, f"cow_{index:03d}", AgentKind.COW, position)
 
     def _add(self, city_map: CityMap, agent_id: str, kind: AgentKind, position: Position) -> None:
         agent = TrafficAgent(
@@ -159,6 +200,47 @@ class TrafficProcess(IWorldProcess):
             return
         agent.waiting += 1
         agent.previous = agent.position
+        if agent.waiting >= _GIVE_WAY and agent.position.distance_to(Position(*vehicle)) <= 2:
+            self._give_way(city_map, agent, vehicle)
+
+    def _give_way(self, city_map: CityMap, agent: TrafficAgent, vehicle: Tile) -> None:
+        """Clear the rescue vehicle's way when this agent is stuck beside it.
+
+        The emergency brake rightly refuses to drive into a road user, so a
+        car boxed in on a one-lane street in front of the vehicle, with
+        nowhere to turn, held the vehicle there for the rest of the mission.
+        Real traffic mounts the kerb or pulls into a driveway for an
+        ambulance: the agent steps onto any free neighbouring pavement or
+        road tile; failing that, it leaves the street and rejoins the
+        traffic far away.
+        """
+        for heading in _HEADINGS:
+            dx, dy = heading.delta
+            target = (agent.position.x + dx, agent.position.y + dy)
+            if target == vehicle or target in self._occupied:
+                continue
+            if _is(city_map, target[0], target[1], _WALK_GROUND):
+                self._relocate(agent, Position(*target), heading, glide=True)
+                return
+        far = [
+            p
+            for p in self._roads
+            if p.as_tuple() not in self._occupied
+            and p.distance_to(Position(*vehicle)) > _REJOIN_DISTANCE
+        ]
+        if far:
+            self._relocate(agent, self._rng.choice(far), agent.heading, glide=False)
+
+    def _relocate(
+        self, agent: TrafficAgent, target: Position, heading: Heading, glide: bool
+    ) -> None:
+        del self._occupied[agent.position.as_tuple()]
+        agent.previous = agent.position if glide else target
+        agent.position = target
+        agent.heading = heading
+        agent.moved_at = self._clock
+        agent.waiting = 0
+        self._occupied[target.as_tuple()] = agent
 
     def _choices(self, city_map: CityMap, agent: TrafficAgent) -> list[Heading]:
         """Headings to try, best first."""
@@ -166,7 +248,7 @@ class TrafficProcess(IWorldProcess):
         sides = [ahead.turn_left(), ahead.turn_right()]
         self._rng.shuffle(sides)
         back = ahead.turn_left().turn_left()
-        if agent.kind is AgentKind.PEDESTRIAN:
+        if not agent.kind.is_vehicle:
             if self._rng.random() < 0.25:
                 return [*sides, ahead, back]
             return [ahead, *sides, back]
@@ -182,10 +264,12 @@ class TrafficProcess(IWorldProcess):
 
     def _may_enter(self, city_map: CityMap, agent: TrafficAgent, target: Tile) -> bool:
         x, y = target
-        if agent.kind is AgentKind.CAR:
+        if agent.kind.is_vehicle:
             return _is(city_map, x, y, _CAR_GROUND)
         if not _is(city_map, x, y, _WALK_GROUND):
             return False
+        if agent.kind is AgentKind.COW:
+            return True  # cattle wander onto the road with no regard for the kerb
         here_road = city_map.tile_at(agent.position) is TerrainType.ROAD
         there_road = city_map.tile_at(Position(x, y)) is TerrainType.ROAD
         if there_road and not here_road:

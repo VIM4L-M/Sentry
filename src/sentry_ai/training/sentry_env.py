@@ -35,7 +35,12 @@ from gymnasium import spaces
 from numpy.typing import NDArray
 
 from sentry_ai.config.schema import RewardConfig
-from sentry_ai.decision.dqn_controller import POLICY_FEATURES, action_at, policy_features
+from sentry_ai.decision.dqn_controller import (
+    POLICY_FEATURES,
+    TRAFFIC_POLICY_FEATURES,
+    action_at,
+    policy_features,
+)
 from sentry_ai.domain.entities import Position
 from sentry_ai.interfaces.navigation import (
     LOCAL_ACTION_ORDER,
@@ -77,6 +82,7 @@ class SentryEnv(gym.Env[NDArray[np.float32], np.int64]):
         seeds: Sequence[int],
         reward: RewardConfig,
         max_episode_steps: int,
+        traffic_features: bool = False,
     ) -> None:
         """Create the environment.
 
@@ -86,6 +92,9 @@ class SentryEnv(gym.Env[NDArray[np.float32], np.int64]):
             seeds: Hazard seeds episodes are drawn from.
             reward: The reward weights.
             max_episode_steps: Steps before an episode is truncated.
+            traffic_features: Observe the two road-user inputs as well, for
+                a policy trained among cars and pedestrians (the missions
+                must have traffic enabled for them to be non-zero).
 
         Raises:
             ValueError: If ``seeds`` is empty or the step limit is not positive.
@@ -99,12 +108,13 @@ class SentryEnv(gym.Env[NDArray[np.float32], np.int64]):
         self._seeds = list(seeds)
         self._reward = reward
         self._max_steps = max_episode_steps
+        self._traffic = traffic_features
         self._driver = AgentDriver()
         self._mission: Mission | None = None
         self._steps = 0
-        self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(POLICY_FEATURES,), dtype=np.float32
-        )
+        self._road_user_hits = 0
+        size = TRAFFIC_POLICY_FEATURES if traffic_features else POLICY_FEATURES
+        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(size,), dtype=np.float32)
         self.action_space = spaces.Discrete(len(LOCAL_ACTION_ORDER))
 
     @property
@@ -137,7 +147,9 @@ class SentryEnv(gym.Env[NDArray[np.float32], np.int64]):
         self._driver = AgentDriver()
         self._mission = self._factory(mission_seed, self._driver)
         self._steps = 0
-        return policy_features(self._mission.engine.observe()), {"mission_seed": mission_seed}
+        self._road_user_hits = 0
+        observation = policy_features(self._mission.engine.observe(), traffic=self._traffic)
+        return observation, {"mission_seed": mission_seed}
 
     def step(
         self, action: np.int64 | int
@@ -151,6 +163,7 @@ class SentryEnv(gym.Env[NDArray[np.float32], np.int64]):
         rescued_before = engine.stats.victims_rescued
 
         self._driver.action = action_at(int(action))
+        target = _target(before, self._driver.action)
         result = engine.tick()
         self._steps += 1
 
@@ -158,6 +171,9 @@ class SentryEnv(gym.Env[NDArray[np.float32], np.int64]):
         delivered = engine.stats.victims_rescued - rescued_before
         picked_up = len(vehicle.onboard_victims) - onboard_before + delivered
         reward = self._pay(before, after, result, picked_up, delivered)
+        if result is not None and result.outcome.collided and self._road_user_at(target):
+            self._road_user_hits += 1
+            reward += self._reward.road_user_hit
 
         terminated = result is None or engine.is_done
         truncated = not terminated and self._steps >= self._max_steps
@@ -167,8 +183,18 @@ class SentryEnv(gym.Env[NDArray[np.float32], np.int64]):
             "rescued": stats.victims_rescued,
             "lost": stats.victims_lost,
             "collisions": stats.collisions,
+            "road_user_hits": self._road_user_hits,
         }
-        return policy_features(after), reward, terminated, truncated, info
+        return policy_features(after, traffic=self._traffic), reward, terminated, truncated, info
+
+    def _road_user_at(self, tile: tuple[int, int] | None) -> bool:
+        """Whether a car or a person stands on ``tile`` now.
+
+        Checked after the tick: road users move at the start of it, before
+        the vehicle acts, so the one the vehicle drove into is there now.
+        """
+        traffic = self.mission.traffic
+        return tile is not None and traffic is not None and tile in traffic.occupants()
 
     def _pay(
         self,
@@ -198,6 +224,15 @@ class SentryEnv(gym.Env[NDArray[np.float32], np.int64]):
             elif result.phase is MissionPhase.FAILED:
                 reward += weights.failure
         return float(reward)
+
+
+def _target(observation: LocalObservation, action: LocalAction) -> tuple[int, int] | None:
+    """The tile ``action`` moves the vehicle into, or ``None`` if it stays put."""
+    step = {LocalAction.MOVE_FORWARD: 1, LocalAction.REVERSE: -1}.get(action)
+    if step is None:
+        return None
+    dx, dy = observation.heading.delta
+    return observation.position.x + step * dx, observation.position.y + step * dy
 
 
 def _distance(a: Position, b: Position) -> int:

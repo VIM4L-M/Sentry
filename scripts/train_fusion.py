@@ -106,6 +106,7 @@ def _collect_all(
             predictor,
             config.oracle_drive_probability,
             random.Random(config.seed + seeds[0]),
+            label_mode=config.label_mode,
         )
         print(f"collecting {len(seeds)} missions (seeds {seeds[0]}-{seeds[-1]}) ...", flush=True)
         dataset = collect(factory.build, evidence_for, seeds, recorder, config.max_ticks)

@@ -95,14 +95,26 @@ class MissionConfig:
             ``urgency_weight * (1 - health/100)``, so at ``0.0`` the
             controller always takes the cheapest victim to reach and at high
             values it will cross the city for someone critical.
+        block_confirm_refreshes: How many consecutive map refreshes must show
+            the rest of the route blocked before the command center drops it
+            and replans. A detector flickers; a collapse persists. ``1``
+            reacts to a single frame, which can abandon a victim over a
+            one-tick phantom; ``3`` (0.3 s) ignores flicker and still reacts
+            to a real collapse. Adopted from the teammate's Phase 8 build.
     """
 
     time_limit_seconds: float = 300.0
     replan_on_blocked_route: bool = True
     min_battery_to_continue: float = 15.0
     urgency_weight: float = 14.0
+    block_confirm_refreshes: int = 3
 
     def __post_init__(self) -> None:
+        if self.block_confirm_refreshes < 1:
+            raise ConfigValidationError(
+                f"mission.block_confirm_refreshes must be at least 1, "
+                f"got {self.block_confirm_refreshes}"
+            )
         if self.time_limit_seconds <= 0.0:
             raise ConfigValidationError(
                 f"mission.time_limit_seconds must be positive, got {self.time_limit_seconds}"
@@ -285,6 +297,12 @@ class TrafficConfig:
         car_step_ticks: Ticks between a car's moves (the rescue vehicle
             moves every tick, so cars are slower and it can catch up).
         pedestrian_step_ticks: Ticks between a pedestrian's steps.
+        autos: Autorickshaws, slower than cars, on the road tiles.
+        two_wheelers: Motorbikes and scooters, as quick as cars.
+        cows: Cattle wandering the road and the verge, slowest of all.
+        auto_step_ticks: Ticks between an autorickshaw's moves.
+        two_wheeler_step_ticks: Ticks between a two-wheeler's moves.
+        cow_step_ticks: Ticks between a cow's steps.
         crossing_chance: Chance a pedestrian at the kerb steps into the road.
         seed: Seed for spawning and every choice an agent makes.
     """
@@ -296,17 +314,29 @@ class TrafficConfig:
     pedestrian_step_ticks: int = 4
     crossing_chance: float = 0.15
     seed: int = 20250928
+    autos: int = 0
+    two_wheelers: int = 0
+    cows: int = 0
+    auto_step_ticks: int = 3
+    two_wheeler_step_ticks: int = 2
+    cow_step_ticks: int = 6
 
     def __post_init__(self) -> None:
         for name, value in (
             ("cars", self.cars),
             ("pedestrians", self.pedestrians),
+            ("autos", self.autos),
+            ("two_wheelers", self.two_wheelers),
+            ("cows", self.cows),
         ):
             if value < 0:
                 raise ConfigValidationError(f"traffic.{name} must be non-negative, got {value}")
         for name, value in (
             ("car_step_ticks", self.car_step_ticks),
             ("pedestrian_step_ticks", self.pedestrian_step_ticks),
+            ("auto_step_ticks", self.auto_step_ticks),
+            ("two_wheeler_step_ticks", self.two_wheeler_step_ticks),
+            ("cow_step_ticks", self.cow_step_ticks),
         ):
             if value < 1:
                 raise ConfigValidationError(f"traffic.{name} must be at least 1, got {value}")
@@ -889,6 +919,10 @@ class RewardConfig:
             behaviour.
         completion: Once, when the mission completes.
         failure: Once, when the mission fails.
+        road_user_hit: Per move into a car or a pedestrian (Phase 9
+            traffic), on top of ``collision``. An ambulance that injures
+            people on its way has failed at its job, so this is set far
+            above any other penalty; ``0.0`` where there is no traffic.
     """
 
     progress: float = 1.0
@@ -902,6 +936,7 @@ class RewardConfig:
     reverse: float = -0.2
     completion: float = 10.0
     failure: float = -10.0
+    road_user_hit: float = 0.0
 
     def __post_init__(self) -> None:
         for name in ("progress", "pickup", "delivery", "completion"):
@@ -915,6 +950,7 @@ class RewardConfig:
             "battery",
             "reverse",
             "failure",
+            "road_user_hit",
         ):
             if getattr(self, name) > 0.0:
                 raise ConfigValidationError(
@@ -951,6 +987,9 @@ class DqnTrainingConfig:
         device: ``"auto"``, ``"cpu"``, ``"cuda"``, or a device index.
         seed: Fixed so a run is reproducible.
         reward: The reward weights.
+        traffic_features: Give the policy the two road-user inputs
+            (``TRAFFIC_POLICY_FEATURES``). For training among cars and
+            pedestrians; the app config must then enable traffic.
     """
 
     runs_dir: Path = Path("models/dqn")
@@ -975,6 +1014,7 @@ class DqnTrainingConfig:
     device: str = "auto"
     seed: int = 20250809
     reward: RewardConfig = field(default_factory=RewardConfig)
+    traffic_features: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -1049,6 +1089,10 @@ class AppConfig:
             )
 
 
+#: The two fusion labels; see ``FusionTrainingConfig.label_mode``.
+LABEL_MODES = ("truth", "veto")
+
+
 @dataclass(frozen=True)
 class FusionTrainingConfig:
     """Scenario, data and hyperparameters for the fusion MLP (Unit I).
@@ -1091,6 +1135,12 @@ class FusionTrainingConfig:
             stale map, disagrees with the ground-truth decision. They are a
             few percent of all ticks and the only ones where fusion earns
             its place.
+        label_mode: What fusion is taught to output. ``"truth"``: the
+            action the DQN would take on the true map (any action — the
+            original Phase 7 label). ``"veto"``: the DQN's own action,
+            unless it would move into a tile that is really impassable, in
+            which case STOP — the label the teammate's build used, which
+            only asks the network to learn when to veto.
         device: ``"auto"``, ``"cpu"``, ``"cuda"``, or a device index.
         seed: Fixed so a run is reproducible.
     """
@@ -1114,6 +1164,7 @@ class FusionTrainingConfig:
     weight_decay: float = 1e-4
     patience: int = 10
     critical_weight: float = 2.0
+    label_mode: str = "truth"
     override_threshold: float = 0.8
     report_hazards: bool = False
     report_threshold: float = 0.5
@@ -1145,6 +1196,10 @@ class FusionTrainingConfig:
             raise ConfigValidationError("fusion.report_threshold must be within 0.0-1.0")
         if not 0.0 <= self.override_threshold <= 1.0:
             raise ConfigValidationError("fusion.override_threshold must be within 0.0-1.0")
+        if self.label_mode not in LABEL_MODES:
+            raise ConfigValidationError(
+                f"fusion.label_mode must be one of {LABEL_MODES}, got {self.label_mode!r}"
+            )
         if not self.hidden_sizes or any(size <= 0 for size in self.hidden_sizes):
             raise ConfigValidationError("fusion.hidden_sizes must be a non-empty list of positives")
 

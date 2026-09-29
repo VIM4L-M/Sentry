@@ -17,7 +17,6 @@ from dataclasses import dataclass
 import pygame
 
 from sentry_ai.domain.map import CityMap
-from sentry_ai.domain.traffic import AgentKind
 from sentry_ai.rendering.drive_view import DriveViewRenderer, TrafficView
 from sentry_ai.rendering.motion import VehiclePose
 from sentry_ai.rendering.theme import Theme
@@ -123,10 +122,10 @@ class SurroundCameraPanel:
 
 
 def _count(traffic: TrafficView | None, pose: VehiclePose, facing: float) -> str:
-    """How many tracked cars and people lie in this camera's quarter."""
+    """How many tracked vehicles and people or animals lie in this camera's quarter."""
     if traffic is None:
         return ""
-    cars = people = 0
+    vehicles = others = 0
     direction = pose.angle + facing
     ax, ay = math.sin(direction), -math.cos(direction)
     for agent in traffic.near(pose.x, pose.y, traffic.sensor_range):
@@ -137,8 +136,8 @@ def _count(traffic: TrafficView | None, pose: VehiclePose, facing: float) -> str
             continue
         if (dx * ax + dy * ay) / distance < math.cos(math.pi / 4):
             continue
-        if agent.kind is AgentKind.CAR:
-            cars += 1
+        if agent.kind.is_vehicle:
+            vehicles += 1
         else:
-            people += 1
-    return f"{cars} car{'s' * (cars != 1)} · {people} {'person' if people == 1 else 'people'}"
+            others += 1
+    return f"{vehicles} vehicle{'s' * (vehicles != 1)} · {others} on foot"

@@ -20,7 +20,7 @@ Controls
     ``1`` onboard camera + YOLO, ``2`` LSTM, ``3`` fusion MLP, ``4``
     denoiser, ``5`` DQN driver (off = waypoint follower), ``L`` map lag.
     ``V`` switches the world between the top-down and the 3D (isometric) view.
-    ``[`` and ``]`` halve and double the simulation speed (0.25x to 2x); in
+    ``[`` and ``]`` halve and double the simulation speed (0.1x to 2x); in
     the top-down view the vehicle glides from tile to tile at that speed.
     ``F`` switches to the drive view: the camera follows the vehicle and the
     map turns with it, Tesla style. City-sized maps open in it, with four
@@ -77,7 +77,11 @@ _CAMERA_REFRESH_TICKS = 3
 
 #: Bounds of the simulation speed set with ``[`` and ``]``. Speed changes only
 #: how fast ticks happen in wall-clock time, never what a tick does.
-MIN_SPEED, MAX_SPEED = 0.25, 2.0
+MIN_SPEED, MAX_SPEED = 0.1, 2.0
+
+#: Speed the window opens at: three vehicle moves a second, slow enough to
+#: follow each decision. At 1.0 the vehicle makes ten moves a second.
+DEFAULT_SPEED = 0.3
 
 #: Maps with more tiles than this are city-sized: the window keeps a fixed
 #: world area, opens in the drive view, and shrinks the whole-map views to fit.
@@ -150,7 +154,7 @@ class SimulationApp:
         scene: MissionScene | None = None,
         satellite: pygame.Surface | None = None,
         street: StreetPhotoLibrary | None = None,
-        speed: float = 1.0,
+        speed: float = DEFAULT_SPEED,
         metres_per_tile: float | None = None,
     ) -> None:
         """Create the app.
@@ -377,8 +381,7 @@ class SimulationApp:
         return TrafficView(
             agents=self._city_map.traffic,
             clock=traffic.clock + fraction,
-            car_step_ticks=traffic.config.car_step_ticks,
-            pedestrian_step_ticks=traffic.config.pedestrian_step_ticks,
+            step_ticks=traffic.step_ticks_by_kind(),
             brake=brake.last if brake is not None else None,
         )
 
@@ -420,6 +423,10 @@ class SimulationApp:
             return
         world_width, world_height = self._world_px
         if self._show_drive and self._is_large and self._surround is not None:
+            if self._street is not None and self._ticks_since_capture >= _CAMERA_REFRESH_TICKS:
+                # The street-photo column shows the onboard frame under the photo.
+                self._camera_frames = [self._sensor_rig.capture_onboard(self._city_map)]
+                self._ticks_since_capture = 0
             self._surround.draw(
                 surface,
                 world_width,

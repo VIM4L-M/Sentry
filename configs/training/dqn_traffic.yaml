@@ -1,0 +1,67 @@
+# Phase 9: the DQN retrained among cars and pedestrians. The same network and
+# rewards as configs/training/dqn.yaml, plus two inputs (a road user on the
+# tile ahead, and two tiles ahead) and a heavy penalty for hitting one.
+# DQN local controller for Unit V (Reinforcement Learning).
+# Loaded by sentry_ai.config.loader.ConfigLoader.load_dqn_config().
+# Every key is optional — an omitted key uses the dataclass default in
+# sentry_ai.config.schema.
+
+runs_dir: "models/dqn"
+
+# Episodes. Each training episode is a whole mission: a hazard seed drawn
+# from the training range, and the vehicle started on a random road tile.
+# Evaluation seeds come straight after the training range and are never
+# trained on.
+train_seeds: 400
+eval_seeds: 40
+seed_base: 3000
+max_episode_steps: 1500   # the mission timer is 3000 ticks; a stuck policy is cut off sooner
+
+# Stable-Baselines3 DQN. The observation is seven numbers and the network
+# is tiny, so this trains on a CPU; a GPU buys little at this size.
+total_timesteps: 300000
+learning_rate: 0.0005
+buffer_size: 100000
+learning_starts: 5000
+batch_size: 64
+gamma: 0.99
+train_freq: 4
+target_update_interval: 2000
+exploration_fraction: 0.3
+exploration_final_eps: 0.05
+hidden_sizes: [64, 64]
+
+# Held-out evaluation during training; the best checkpoint is kept.
+eval_every: 25000
+eval_episodes: 20
+
+# Milestone M6: on the same held-out missions, the DQN must rescue at least
+# this share of the victims the waypoint follower rescues. The follower
+# rescues everyone on this map, so "beat it" is not on offer — matching it
+# while learning to drive from scratch is the bar.
+rescue_threshold: 0.9
+
+device: "auto"
+seed: 20250809
+
+# Reward, per tick. Local by design (ADR 0002): paid for driving the route
+# the command center planned, not for choosing it. Signs are enforced —
+# rewards are non-negative, penalties non-positive.
+reward:
+  progress: 1.0          # per tile closer to the waypoint; the same cost for moving away
+  pickup: 5.0            # per victim taken aboard
+  delivery: 10.0         # per victim delivered to the hospital
+  collision: -2.0        # per refused move into something impassable
+  damage: -0.2           # per health percent lost
+  fire_proximity: -0.5   # scaled by 0-1 closeness to the nearest fire
+  step: -0.05            # every tick, so standing still is never free
+  battery: -0.1          # per battery percent spent
+  reverse: -0.2          # per REVERSE: without it the policy drove 14% of tiles backwards
+  completion: 10.0       # once, on mission completion
+  failure: -10.0
+  # An ambulance must never hurt anyone on the way: hitting a car or a person
+  # costs as much as failing the whole mission, on top of the collision.
+  road_user_hit: -10.0         # once, on mission failure
+
+# See road users: the policy gets the two extra inputs.
+traffic_features: true

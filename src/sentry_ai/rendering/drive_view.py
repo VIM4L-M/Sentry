@@ -22,7 +22,7 @@ not depend on the heading.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 import pygame
@@ -59,6 +59,11 @@ _DAMAGED = frozenset({TerrainType.COLLAPSED_BUILDING, TerrainType.RUBBLE, Terrai
 
 _CAR = Color(196, 202, 212)
 _PERSON = Color(246, 206, 96)
+#: Chennai's autorickshaws: yellow body, black canopy.
+_AUTO = Color(238, 200, 40)
+_AUTO_TOP = Color(30, 30, 30)
+_BIKE = Color(200, 70, 70)
+_COW = Color(236, 232, 222)
 _TRACKED = Color(120, 230, 255)
 
 #: Nearest tracked road users that get a distance tag.
@@ -105,8 +110,7 @@ class TrafficView:
         agents: Every car and pedestrian.
         clock: The traffic clock, including the fraction of the tick in
             progress, so agents glide between tiles like the vehicle does.
-        car_step_ticks: Ticks one car move spans.
-        pedestrian_step_ticks: Ticks one pedestrian step spans.
+        step_ticks: Ticks one move spans, for each kind of road user.
         sensor_range: Tiles within which the surround sensors track an agent;
             tracked agents are outlined and the nearest are tagged.
         brake: The emergency brake's intervention this tick, if any.
@@ -114,8 +118,7 @@ class TrafficView:
 
     agents: Sequence[TrafficAgent]
     clock: float
-    car_step_ticks: int
-    pedestrian_step_ticks: int
+    step_ticks: Mapping[AgentKind, int]
     sensor_range: float = 5.0
     brake: BrakeEvent | None = None
 
@@ -134,7 +137,7 @@ class TrafficView:
 
     def where(self, agent: TrafficAgent) -> tuple[float, float]:
         """The agent's drawn centre, in tiles, part way along its last move."""
-        step = self.car_step_ticks if agent.kind is AgentKind.CAR else self.pedestrian_step_ticks
+        step = self.step_ticks.get(agent.kind, 1)
         t = min(1.0, max(0.0, (self.clock - agent.moved_at) / step))
         x = agent.previous.x + (agent.position.x - agent.previous.x) * t
         y = agent.previous.y + (agent.position.y - agent.previous.y) * t
@@ -433,20 +436,9 @@ class DriveViewRenderer:
                 continue
             tracked = math.hypot(x - pose.x, y - pose.y) <= traffic.sensor_range
             centre = to_patch(x, y)
-            if agent.kind is AgentKind.CAR:
-                dx, dy = agent.heading.delta
-                length, width = int(scale * 0.8), int(scale * 0.46)
-                size = (length, width) if dx else (width, length)
-                body = pygame.Rect(0, 0, *size)
-                body.center = centre
-                pygame.draw.rect(patch, _CAR.as_tuple(), body, border_radius=max(2, width // 3))
-                if tracked:
-                    pygame.draw.rect(patch, _TRACKED.as_tuple(), body.inflate(4, 4), 2, 5)
-            else:
-                radius = max(3, int(scale * 0.16))
-                pygame.draw.circle(patch, _PERSON.as_tuple(), centre, radius)
-                if tracked:
-                    pygame.draw.circle(patch, _TRACKED.as_tuple(), centre, radius + 4, 2)
+            outline = _draw_road_user(patch, agent, centre, scale)
+            if tracked:
+                pygame.draw.rect(patch, _TRACKED.as_tuple(), outline.inflate(6, 6), 2, 5)
 
     def _draw_traffic_tags(
         self,
@@ -469,13 +461,17 @@ class DriveViewRenderer:
             ),
             key=lambda item: item[0],
         )
+        placed: list[pygame.Rect] = []
         for distance, agent, (x, y) in tracked[:_TAGGED_ROAD_USERS]:
             sx, sy = _to_screen(x, y, pose, anchor, scale)
-            name = "CAR" if agent.kind is AgentKind.CAR else "PERSON"
+            name = agent.kind.label
             far = f"{distance * metres:.0f} m" if metres else f"{distance:.1f} tiles"
             text = small.render(f"{name} {far}", True, _GROUND.as_tuple())
             tag = text.get_rect().inflate(8, 2)
             tag.midleft = (sx + int(scale * 0.5), sy)
+            while tag.collidelist(placed) != -1:  # stack tags that would overlap
+                tag.top = placed[tag.collidelist(placed)].bottom + 2
+            placed.append(tag)
             pygame.draw.rect(surface, _TRACKED.as_tuple(), tag, border_radius=4)
             surface.blit(text, text.get_rect(center=tag.center))
 
@@ -484,7 +480,7 @@ class DriveViewRenderer:
     ) -> None:
         """Red strip across the view: the brake just stopped the vehicle, and for whom."""
         _, large = self._font_pair()
-        who = "CAR" if brake.kind is AgentKind.CAR else "PEDESTRIAN"
+        who = "PEDESTRIAN" if brake.kind is AgentKind.PEDESTRIAN else brake.kind.label
         text = large.render(f"EMERGENCY BRAKE · {who} AHEAD", True, _WHITE.as_tuple())
         strip = pygame.Rect(0, 0, text.get_width() + 40, text.get_height() + 16)
         strip.midtop = (area.centerx, area.top + 100)
@@ -679,6 +675,43 @@ def group_sightings(sightings: Sequence[Sighting]) -> list[SightingGroup]:
             )
         )
     return groups
+
+
+#: Body length and width of each kind, in tiles.
+_BODIES: dict[AgentKind, tuple[float, float]] = {
+    AgentKind.CAR: (0.8, 0.46),
+    AgentKind.AUTO_RICKSHAW: (0.6, 0.42),
+    AgentKind.TWO_WHEELER: (0.55, 0.2),
+    AgentKind.COW: (0.62, 0.3),
+}
+
+
+def _draw_road_user(
+    patch: pygame.Surface, agent: TrafficAgent, centre: tuple[int, int], scale: float
+) -> pygame.Rect:
+    """Draw one road user at ``centre`` along its heading; return its outline."""
+    if agent.kind is AgentKind.PEDESTRIAN:
+        radius = max(3, int(scale * 0.16))
+        pygame.draw.circle(patch, _PERSON.as_tuple(), centre, radius)
+        box = pygame.Rect(0, 0, radius * 2, radius * 2)
+        box.center = centre
+        return box
+    length, width = _BODIES[agent.kind]
+    dx, _ = agent.heading.delta
+    size = (int(scale * length), int(scale * width))
+    body = pygame.Rect(0, 0, *(size if dx else size[::-1]))
+    body.center = centre
+    if agent.kind is AgentKind.COW:
+        pygame.draw.ellipse(patch, _COW.as_tuple(), body)
+        return body
+    color = {AgentKind.CAR: _CAR, AgentKind.AUTO_RICKSHAW: _AUTO, AgentKind.TWO_WHEELER: _BIKE}
+    radius = max(2, min(body.size) // 3)
+    pygame.draw.rect(patch, color[agent.kind].as_tuple(), body, border_radius=radius)
+    if agent.kind is AgentKind.AUTO_RICKSHAW:
+        pygame.draw.rect(
+            patch, _AUTO_TOP.as_tuple(), body.inflate(-body.w // 3, -body.h // 3), 0, 3
+        )
+    return body
 
 
 def remaining(route: Route | None, position: Position) -> tuple[Position, ...]:

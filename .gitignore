@@ -32,6 +32,8 @@ data/synthetic/**
 data/denoised/**
 data/trajectories/**
 data/fusion/**
+data/fusion_*/**
+data/trajectories_*/**
 data/maps/osm_cache/**
 data/maps/satellite/**
 data/maps/street/**

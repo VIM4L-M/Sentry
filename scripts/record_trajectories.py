@@ -26,16 +26,21 @@ Usage:
     python scripts/record_trajectories.py
     python scripts/record_trajectories.py --train-missions 300 --val-missions 80
     python scripts/record_trajectories.py --fixed-start --output data/trajectories_fixed
+    python scripts/record_trajectories.py --dqn models/dqn/sentry/best.zip \
+        --output data/trajectories_dqn        # the LSTM fusion reads (Phase 7)
 """
 
 from __future__ import annotations
 
 import argparse
+from functools import partial
 from pathlib import Path
 
 from sentry_ai.common.logging_config import get_logger, setup_logging
 from sentry_ai.config.loader import ConfigLoader
 from sentry_ai.domain.map import CityMap
+from sentry_ai.interfaces.navigation import ILocalController
+from sentry_ai.simulation.factory import Mission
 from sentry_ai.training.missions import MissionFactory
 from sentry_ai.training.trajectories import TrajectoryRecorder, TrajectorySet
 
@@ -61,7 +66,16 @@ def main() -> int:
     factory = MissionFactory.from_app_config(
         loader, app_config, randomise_start=not args.fixed_start
     )
-    recorder = TrajectoryRecorder(factory.build, max_ticks=args.max_ticks)
+    build = factory.build
+    if args.dqn is not None:
+        # Record how the trained DQN drives, not the waypoint follower: the
+        # LSTM that feeds fusion must predict the driver fusion actually sits
+        # on. The DQN reverses and pre-turns; the follower never does.
+        from sentry_ai.decision.dqn_controller import DqnLocalController  # noqa: PLC0415
+
+        dqn = DqnLocalController.from_file(loader.resolve(args.dqn))
+        build = partial(_build_with, factory, dqn)
+    recorder = TrajectoryRecorder(build, max_ticks=args.max_ticks)
     output = loader.resolve(args.output)
 
     first_val = args.seed_base + args.train_missions
@@ -75,6 +89,11 @@ def main() -> int:
         trajectories.save(output / f"{split}.json")
         _report(split, trajectories)
     return 0
+
+
+def _build_with(factory: MissionFactory, driver: ILocalController, seed: int) -> Mission:
+    """One mission for ``seed``, driven by ``driver``."""
+    return factory.build(seed, driver)
 
 
 def _report(split: str, trajectories: TrajectorySet) -> None:
@@ -110,6 +129,9 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--max-ticks", type=int, default=5000, help="Tick budget per mission (default: 5000)."
+    )
+    parser.add_argument(
+        "--dqn", help="Drive with this trained DQN instead of the waypoint follower."
     )
     parser.add_argument(
         "--fixed-start",

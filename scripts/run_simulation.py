@@ -48,6 +48,7 @@ from sentry_ai.perception.grid_builder import OccupancyGridBuilder
 from sentry_ai.perception.grid_source import DetectedGridSource, ModelObserver
 from sentry_ai.perception.scene_evidence import OnboardEvidenceSource
 from sentry_ai.rendering.simulation_app import (
+    DEFAULT_SPEED,
     MAX_SPEED,
     MIN_SPEED,
     MissionScene,
@@ -160,6 +161,7 @@ def _build_scene(
         vehicle_config=vehicle_config,
         world_processes=processes,
         physics_source=physics,
+        road_users=traffic.occupants if traffic is not None else None,
     )
     return MissionScene(
         city_map=city_map,
@@ -224,7 +226,7 @@ def _build_brain(
     from sentry_ai.decision.mlp_fusion import MlpFusion  # noqa: PLC0415
     from sentry_ai.sequence.lstm_predictor import LstmMotionPredictor  # noqa: PLC0415
 
-    fusion_config = loader.load_fusion_config("configs/training/fusion.yaml")
+    fusion_config = loader.load_fusion_config(args.fusion_config)
     threshold = fusion_config.override_threshold
     fusion = (
         MlpFusion.from_checkpoint(loader.resolve(args.fusion), args.device, threshold)
@@ -350,9 +352,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--speed",
         type=float,
-        default=1.0,
-        help=f"Simulation speed, {MIN_SPEED:g}-{MAX_SPEED:g}; 0.5 = slow motion "
-        "([ and ] change it live; default: 1).",
+        default=DEFAULT_SPEED,
+        help=f"Simulation speed, {MIN_SPEED:g}-{MAX_SPEED:g}; 1 = ten moves a second "
+        f"([ and ] change it live; default: {DEFAULT_SPEED:g}).",
     )
     stack = parser.add_argument_group("full AI stack (Phases 7-8)")
     stack.add_argument(
@@ -361,6 +363,12 @@ def _parse_args() -> argparse.Namespace:
         help="Every model at its default path, the map lag, and the mission-control strip.",
     )
     stack.add_argument("--fusion", help="Fusion MLP checkpoint (Phase 7).")
+    stack.add_argument(
+        "--fusion-config",
+        default=FUSION_CONFIG,
+        help="Fusion settings; with --full its model is used unless --fusion is given "
+        f"(default: {FUSION_CONFIG}; the city demo uses configs/training/fusion_veto.yaml).",
+    )
     stack.add_argument("--lstm", help="Behaviour LSTM checkpoint (Phase 5).")
     stack.add_argument(
         "--lag", type=int, default=0, help="Command-center map lag in refreshes; L toggles it."
@@ -394,11 +402,17 @@ def _parse_args() -> argparse.Namespace:
     return _apply_full_preset(parser.parse_args())
 
 
+#: The fusion settings the window runs with by default: the round-2 "truth"
+#: model (LSTM retrained on DQN driving, route re-check, camera reports on),
+#: best on the shipped map. On a city it never saw, with traffic, the "veto"
+#: model is safer and the city demo passes ``--fusion-config`` for it. Both
+#: are compared in docs/architecture/phase7-fusion.md.
+FUSION_CONFIG = "configs/training/fusion_truth2.yaml"
+
 #: What ``--full`` fills in, for every flag the user left unset.
 _FULL_PRESET = {
     "dqn": "models/dqn/sentry/best.zip",
-    "lstm": "models/lstm/sentry/best.pt",
-    "fusion": "models/fusion/sentry/best.pt",
+    "lstm": "models/lstm/dqn/best.pt",
     "denoiser": "models/autoencoder/sentry/best.pt",
     "onboard_weights": "models/yolo/denoised/weights/best.pt",
 }
@@ -407,12 +421,28 @@ _FULL_PRESET = {
 _FULL_PRESET_LAG = 30
 
 
+def _fusion_weights(config_path: str) -> str:
+    """The checkpoint trained with ``config_path``: ``configs/training/fusion_<run>.yaml``
+    trains ``models/fusion/<run>/best.pt`` (``train_fusion.py --name <run>``)."""
+    run = Path(config_path).stem.removeprefix("fusion_")
+    return f"models/fusion/{run if run != 'fusion' else 'sentry'}/best.pt"
+
+
 def _apply_full_preset(args: argparse.Namespace) -> argparse.Namespace:
     """Resolve ``--full`` into the individual flags, and mark the fusion stack on."""
     if args.full:
+        if args.dqn is None:
+            # The fusion model was trained on one particular DQN's Q-values;
+            # run it with that DQN, not whichever is the default.
+            fusion = ConfigLoader(project_root=PROJECT_ROOT).load_fusion_config(args.fusion_config)
+            if fusion.dqn_weights.is_file():
+                args.dqn = str(fusion.dqn_weights)
         for name, path in _FULL_PRESET.items():
             if getattr(args, name) is None and (PROJECT_ROOT / path).is_file():
                 setattr(args, name, path)
+        weights = _fusion_weights(args.fusion_config)
+        if args.fusion is None and (PROJECT_ROOT / weights).is_file():
+            args.fusion = weights
         args.lag = args.lag or _FULL_PRESET_LAG
     args.fusion_stack = bool(args.fusion or args.lstm or args.full)
     return args

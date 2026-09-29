@@ -42,6 +42,7 @@ from sentry_ai.decision.mlp_fusion import (
     FusionNet,
     fusion_features,
 )
+from sentry_ai.domain.entities import Position
 from sentry_ai.interfaces.decision import SceneEvidence
 from sentry_ai.interfaces.navigation import (
     LOCAL_ACTION_ORDER,
@@ -160,8 +161,16 @@ class FusionRecorder(ILocalController):
         predictor: IMotionPredictor | None,
         oracle_probability: float,
         rng: random.Random,
+        label_mode: str = "truth",
     ) -> None:
-        """Create a recorder that writes into its own buffer."""
+        """Create a recorder that writes into its own buffer.
+
+        ``label_mode`` picks the label (see ``FusionTrainingConfig``):
+        ``"truth"`` records the DQN's decision on the true map, ``"veto"``
+        records the DQN's own decision, turned into STOP when it would move
+        into a tile the real city has blocked.
+        """
+        self._label_mode = label_mode
         self._policy = policy
         self._predictor = predictor
         self._oracle_probability = oracle_probability
@@ -191,11 +200,24 @@ class FusionRecorder(ILocalController):
         behaviour = (
             self._predictor.predict(list(self._history)) if self._predictor else NO_BEHAVIOUR
         )
+        label = truth.action if self._label_mode == "truth" else self._veto(observation, stale)
         self._buffer.features.append(fusion_features(self._evidence(), behaviour, stale))
-        self._buffer.labels.append(_ACTION_INDEX[truth.action])
-        self._buffer.critical.append(truth.action is not stale.action)
+        self._buffer.labels.append(_ACTION_INDEX[label])
+        self._buffer.critical.append(label is not stale.action)
         self._buffer.missions.append(self._mission_seed)
         return truth if self._rng.random() < self._oracle_probability else stale
+
+    def _veto(self, observation: LocalObservation, stale: LocalDecision) -> LocalAction:
+        """The DQN's action, or STOP if it would drive into something really there."""
+        assert self._engine is not None
+        dx, dy = observation.heading.delta
+        step = {LocalAction.MOVE_FORWARD: 1, LocalAction.REVERSE: -1}.get(stale.action)
+        if step is None:
+            return stale.action
+        x, y = observation.position.x + step * dx, observation.position.y + step * dy
+        if x < 0 or y < 0 or not self._engine.physics_grid().is_traversable(Position(x, y)):
+            return LocalAction.STOP
+        return stale.action
 
     def dataset(self) -> FusionDataset:
         """Everything recorded so far."""

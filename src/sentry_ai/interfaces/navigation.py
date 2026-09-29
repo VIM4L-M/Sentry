@@ -119,6 +119,11 @@ class LocalObservation:
         blocked_ahead: Whether the tile directly in front is impassable.
         fire_proximity: Normalized 0-1 closeness to the nearest known fire
             (1.0 = on top of it, 0.0 = none within sensor range).
+        road_user_ahead: A car or pedestrian is on the tile directly in
+            front, as the vehicle's own sensors see it (Phase 9 traffic).
+            ``False`` wherever there is no traffic.
+        road_user_ahead_far: One is two tiles ahead — the tile the vehicle
+            would reach next after this one.
     """
 
     position: Position
@@ -127,6 +132,8 @@ class LocalObservation:
     next_waypoint: Position | None
     blocked_ahead: bool
     fire_proximity: float
+    road_user_ahead: bool = False
+    road_user_ahead_far: bool = False
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.battery_percent <= 100.0:

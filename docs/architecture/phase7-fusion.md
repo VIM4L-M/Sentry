@@ -217,6 +217,50 @@ best setting was fusion + reports: 134 rescued, 8 collisions, 124 damage,
 56 rescued, 1 collision, every mission completed. Every remaining gap is
 detector error.
 
+## Round 2: what the teammate's build did better, adopted and measured
+
+A teammate built Phases 7-8 independently. Their fusion lost no rescues where
+round 1 here lost 3 and failed 3 of 40 missions. Measured on this laptop with
+their own models and evaluation, the difference came from three decisions,
+not from the network or the hardware:
+
+1. **The route is re-checked against every fresh map.** When the lagging map
+   finally shows a collapse on the rest of the route for 3 refreshes in a row,
+   the command center replans (`MissionController._drop_route_if_blocked`,
+   `mission.block_confirm_refreshes`). Round 1 had no such check. After fusion
+   stopped the vehicle at the debris, it waited for a map that had already
+   been refreshed, and the lost time cost missions.
+2. **The LSTM was retrained on the DQN's own driving**
+   (`record_trajectories.py --dqn`, `models/lstm/dqn`). Round 1's LSTM had
+   learned the waypoint follower and scored 0.52 on its own. Retrained, it
+   scores macro-F1 0.909 (the teammate's: 0.866).
+3. **A simpler label** (`label_mode: veto`). Keep the DQN's move unless it
+   would enter a tile the real city has blocked, then STOP. The network only
+   has to learn when to veto. Round 1 imitated the DQN on the true map, any
+   action.
+
+All three were ported with tests (`tests/integration/test_route_recheck.py`,
+`tests/unit/test_fusion_labels.py`). Both labels were retrained with the new
+LSTM and the re-check. 40 held-out missions, 3 s lag, camera through smoke,
+denoiser and YOLO:
+
+| Driver | Rescued | Lost | Collisions | Damage / mission | Completed |
+|---|---|---|---|---|---|
+| DQN alone (with the re-check) | 147 | 8 | 71 | 10.6% | 40/40 |
+| Round 1 fusion | 138 | 9 | 9 | 3.2% | 37/40 |
+| Teammate's fusion (their evaluation, this laptop) | 140 | 12 | 13 | 3.6% | 39/40 |
+| **truth2 + camera reports** | **148** | **5** | **0** | **1.5%** | 39/40 |
+| veto | 147 | 8 | 6 | 2.7% | **40/40** |
+
+`truth2` (`configs/training/fusion_truth2.yaml`) is the default on the shipped
+map: it rescues more than the DQN alone, with no collisions. Camera reports
+used to cost completions and now help, because the re-check replans on them.
+
+On cities it never saw, with traffic, `veto` is the safer one. Chicago,
+3 hazard seeds: equal rescues, and 0 collisions against 10-12 for `truth2` +
+reports. The city demos use the veto model retrained on the traffic-aware DQN
+(`fusion_veto_traffic.yaml`; README, Phase 9).
+
 ## Known limitations
 
 - **What YOLO reports ahead is not always what is ahead.** The report
@@ -228,7 +272,5 @@ detector error.
   the shipped map. It has not been measured at other lags, and on dense
   real street grids (Kundrathur) it is least reliable. Training on a mix of
   imported maps is the next step.
-- **The LSTM contributes little.** Alone it is barely better than chance on
-  this task. It predicts what the vehicle *will* do, which is mostly what
-  the DQN already says. It stays in the input because M7 asks for fusion
-  of all signals, and the ablation shows what it adds.
+- **Round 1's LSTM contributed little.** It was trained on the waypoint
+  follower's driving, not the DQN's; round 2 fixed that (macro-F1 0.909).
