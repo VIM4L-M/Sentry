@@ -61,6 +61,7 @@ from sentry_ai.rendering.motion import VehicleGlide, VehiclePose
 from sentry_ai.rendering.street_view import StreetPhotoLibrary, StreetViewPanel
 from sentry_ai.rendering.surround_cameras import SurroundCameraPanel
 from sentry_ai.rendering.theme import Theme
+from sentry_ai.rendering.window import FittedWindow, make_dpi_aware, open_window
 from sentry_ai.sensors.camera import CameraView
 from sentry_ai.sensors.frame import CameraFrame
 from sentry_ai.sensors.rig import SensorRig
@@ -252,6 +253,7 @@ class SimulationApp:
         self._metres_per_tile = metres_per_tile
         self._cruise_kmh = cruise_kmh
         self._dashboard = dashboard
+        self._window: FittedWindow | None = None
         self._routes: list[RouteOption] = []
         self._routes_age = math.inf
         self._satellite = satellite
@@ -272,6 +274,7 @@ class SimulationApp:
 
     def run(self) -> None:
         """Open the window and block until the user closes it."""
+        make_dpi_aware()
         pygame.init()
         try:
             self._run_loop(*self._build_renderers())
@@ -331,7 +334,7 @@ class SimulationApp:
             self._draw_mission_control(surface, ai_panel, camera_panel.width_px)
             self._draw_street_view(surface, camera_panel.width_px, ai_panel.width_px)
             hud.draw(surface, self._engine.mission, self._city_map.vehicle)
-            pygame.display.flip()
+            self._present()
             clock.tick(self._render_config.target_fps)
 
     @property
@@ -346,8 +349,8 @@ class SimulationApp:
     def _run_command_center(self, map_renderer: MapRenderer) -> None:
         """The frame loop of the command-center layout (city-sized maps)."""
         assert self._dashboard is not None
-        surface = pygame.display.set_mode(COMMAND_CENTER_SIZE)
-        pygame.display.set_caption(self._render_config.window_title)
+        self._window = open_window(COMMAND_CENTER_SIZE, self._render_config.window_title)
+        surface = self._window.canvas
         renderer = CommandCenterRenderer(self._drive, self._dashboard.street_detector)
         clock = pygame.time.Clock()
         running = True
@@ -359,7 +362,7 @@ class SimulationApp:
             self._drive.advance_animation(frame_seconds)
             self._frame_seconds = frame_seconds
             renderer.draw(surface, self._command_center_state(frame_seconds))
-            pygame.display.flip()
+            self._present()
             clock.tick(self._render_config.target_fps)
 
     def _command_center_state(self, frame_seconds: float) -> CommandCenterState:
@@ -418,9 +421,16 @@ class SimulationApp:
         """Size the window to the map, the camera strip, the AI strip, and the HUD."""
         world_width, world_height = self._world_px
         width = world_width + (panel_width_px if self._sensor_rig else 0) + ai_width_px
-        surface = pygame.display.set_mode((width, world_height + hud_height_px))
-        pygame.display.set_caption(self._render_config.window_title)
-        return surface
+        size = (width, world_height + hud_height_px)
+        self._window = open_window(size, self._render_config.window_title)
+        return self._window.canvas
+
+    def _present(self) -> None:
+        """Show the frame, scaled to the window when the design size does not fit."""
+        if self._window is not None:
+            self._window.present()
+        else:
+            pygame.display.flip()
 
     # ------------------------------------------------------------------
     # Drawing

@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -125,7 +126,7 @@ SCENES: tuple[Scene, ...] = (
         ("configs/maps/osm_chennai.yaml", "models/dqn/traffic/best.zip"),
     ),
     Scene(
-        "Chicago, 4 km of city: the autopilot view",
+        "Chicago, 4 km of city: the same command center in the US",
         (
             "--config",
             "configs/app_city.yaml",
@@ -137,13 +138,12 @@ SCENES: tuple[Scene, ...] = (
         ),
         (
             "4 x 4 km of Chicago's West Side from OpenStreetMap: 40,000 tiles, 6 victims.",
-            "The camera follows the vehicle and the map turns with it, like a Tesla display.",
-            "Blue ribbon: the A* route. Brackets: what the onboard model detects right now.",
-            "The DQN drives with 9 egocentric numbers, so a city 67x bigger needs no retraining.",
-            "350 cars and 450 pedestrians share the streets. Left column: four surround cameras.",
-            "Red EMERGENCY BRAKE: the safety layer stopped for a car or a person.",
+            "Same models as Chennai, no retraining: they drive from 9 egocentric numbers.",
+            "US traffic: 350 cars and 450 pedestrians, keeping right-of-way rules.",
+            "Front camera: real Chicago street photos, stock YOLOv8 boxes real cars and people.",
+            "Route comparison and hazard panel work the same on a different continent.",
             "Press 6 to switch the brake off: the traffic-trained DQN still gives way.",
-            "F whole map / drive view, S satellite, P street photos, [ slower, ] faster.",
+            "S satellite, P street photo, [ slower, ] faster, Space pause.",
         ),
         ("configs/maps/osm_chicago.yaml", "models/dqn/traffic/best.zip"),
     ),
@@ -198,7 +198,12 @@ def _run(number: int, scene: Scene, device: str, speed: float) -> None:
         "--speed",
         str(speed),
     ]
-    subprocess.run(command, cwd=PROJECT_ROOT, check=False)
+    # Find sentry_ai even if the package was never ``pip install -e .``-ed.
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(PROJECT_ROOT / "src"), env.get("PYTHONPATH", "")) if p
+    )
+    subprocess.run(command, cwd=PROJECT_ROOT, check=False, env=env)
 
 
 def _parse_args() -> argparse.Namespace:
